@@ -268,7 +268,7 @@ with form_col:
             # >>> The key line: pass BOTH font_scale and card_size so preview == PNG
             render_meal_card(card, photo_path, out_path,
                              theme=theme, font_scale=font_scale, size=card_size,
-                             panel_ratio=patio_ratio)
+                             panel_ratio=panel_ratio)
 
             # store a log entry
             data_json = json.dumps({
