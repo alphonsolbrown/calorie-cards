@@ -126,7 +126,7 @@ with col_form:
                 logo_path=logo_path
             )
             out_path = os.path.join(OUTPUT_DIR, f"card_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            render_meal_card(card, img_path, out_path, theme=theme)
+            render_meal_card(card, img_path, out_path, theme=theme, font_scale=font_scale)
 
             data_json = json.dumps({
                 "journey_title": journey_title,

@@ -79,40 +79,40 @@ def render_meal_card(
     draw.rectangle([right_x, 0, W, H], fill=theme.panel_color)
 
     y = pad
-    draw.text((right_x + pad, y), card.journey_title, font=_get_font(theme, int(60*font_scale),"bold"), fill=(20,20,20))
-    y += 60
+    draw.text((right_x + pad, y), card.journey_title, font=_get_font(theme, int(46*font_scale),"bold"), fill=(20,20,20))
+    y += int(60*font_scale)
 
     meal_line = f"{card.meal_title} - {card.date_str}"
-    draw.text((right_x + pad, y), meal_line, font=_get_font(theme, int(44*font_scale),"bold"), fill=(20,20,20))
-    y += 26
+    draw.text((right_x + pad, y), meal_line, font=_get_font(theme, int(36*font_scale),"bold"), fill=(20,20,20))
+    y += int(26*font_scale)
 
-    bar_h = 10
-    draw.rectangle([right_x + pad, y + 16, W - pad, y + 16 + bar_h], fill=theme.accent)
-    y += 40
+    bar_h = int(10*font_scale)
+    draw.rectangle([right_x + pad, y + int(16*font_scale), W - pad, y + int(16*font_scale) + bar_h], fill=theme.accent)
+    y += int(40*font_scale)
 
     kcal_line = f"{card.total_calories} Calorie Meal"
     draw.text((right_x + pad, y), kcal_line, font=_get_font(theme, int(42*font_scale),"bold"), fill=(40,40,40))
-    y += int(50 * font_scale)
+    y += int(50*font_scale)
 
-    section_title_font = _get_font(theme, int(38*font_scale),"bold")
-    item_font = _get_font(theme, int(30*font_scale),"regular")
+    section_title_font = _get_font(theme, int(30*font_scale),"bold")
+    item_font = _get_font(theme, int(26*font_scale),"regular")
 
     for sec in card.sections:
-        header_h = int(42 * font_scale)
+        header_h = int(42*font_scale)
         draw.rectangle([right_x, y, W, y + header_h], fill=theme.accent)
-        draw.text((right_x + pad, y + 7), sec.name.upper(), font=section_title_font, fill=(255,255,255))
-        y += header_h + int(10 * font_scale)
+        draw.text((right_x + pad, y + int(7*font_scale)), sec.name.upper(), font=section_title_font, fill=(255,255,255))
+        y += header_h + int(10*font_scale)
         for it in sec.items:
             line = it.text + (f" - {it.cal} cal" if it.cal is not None else "")
             import textwrap as _tw
             for wline in _tw.wrap(line, width=40):
                 draw.text((right_x + pad, y), wline, font=item_font, fill=(40,40,40))
-                y += int(36 * font_scale)
-        y += 8
+                y += int(36*font_scale)
+        y += int(8*font_scale)
 
-    footer_h = 60
+    footer_h = int(60*font_scale)
     draw.rectangle([right_x, H - footer_h, W, H], fill=(255,255,255))
-    draw.rectangle([right_x, H - footer_h, W, H - footer_h + 6], fill=theme.accent_light)
+    draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(6*font_scale)], fill=theme.accent_light)
     footer_text = card.footer_text or ""
     ft_font = _get_font(theme, int(32*font_scale),"italic")
     try:
