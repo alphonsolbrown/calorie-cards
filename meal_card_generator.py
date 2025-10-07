@@ -20,19 +20,21 @@ class Theme:
     panel_color: Tuple[int, int, int] = (255, 255, 255)
     accent: Tuple[int, int, int] = (108, 50, 140)
     accent_light: Tuple[int, int, int] = (150, 90, 180)
+    # Windows-safe defaults; we’ll fall back to PIL default if these aren’t found
     font_regular: str = "C:/Windows/Fonts/arial.ttf"
     font_bold:    str = "C:/Windows/Fonts/arialbd.ttf"
     font_italic:  str = "C:/Windows/Fonts/ariali.ttf"
 
 @dataclass
 class MealCardData:
-    journey_title: str = "40 Day Turn Up (DTU)"
+    program_title: str = "Program"   # renamed from journey_title
+    class_name: str = ""             # new
     meal_title: str = "Meal"
     date_str: str = "MM/DD/YY"
     total_calories: int = 400
     sections: List[MealSection] = field(default_factory=list)
     footer_text: str = ""
-    logo_path: Optional[str] = None  # optional PNG with transparency
+    logo_path: Optional[str] = None  # optional PNG with alpha
 
 # ---------- Font helper ----------
 def _get_font(theme: Theme, size: int, weight: str = "regular"):
@@ -50,15 +52,15 @@ def render_meal_card(
     card: MealCardData,
     photo_path: str,
     output_path: str = "meal_card.png",
-    size: Tuple[int, int] = (1920, 1200),   # big canvas
+    size: Tuple[int, int] = (2560, 1600),   # big by default (sharp PNG)
     theme: Theme = Theme(),
-    font_scale: float = 1.6,                # large, readable default
+    font_scale: float = 1.7,                # large, readable default
 ) -> str:
     W, H = size
     img = Image.new("RGB", size, (245, 245, 245))
     draw = ImageDraw.Draw(img)
-    pad = 30
-    left_w = int(W * 0.64)
+    pad = 36
+    left_w = int(W * 0.62)   # slightly wider photo column for aesthetic balance
     right_x = left_w
 
     # ---- Left photo ----
@@ -71,8 +73,8 @@ def render_meal_card(
         except Exception:
             resample = Image.LANCZOS
         photo = photo.resize(new_sz, resample)
-        x0 = (photo.width - left_w) // 2
-        y0 = (photo.height - H) // 2
+        x0 = max(0, (photo.width - left_w) // 2)
+        y0 = max(0, (photo.height - H) // 2)
         img.paste(photo.crop((x0, y0, x0 + left_w, y0 + H)), (0, 0))
     else:
         draw.rectangle([0, 0, left_w, H], fill=(230, 230, 230))
@@ -85,78 +87,86 @@ def render_meal_card(
 
     y = pad
 
-    # Title
+    # Program title
     draw.text((right_x + pad, y),
-              card.journey_title,
-              font=_get_font(theme, int(60*font_scale), "bold"),
+              card.program_title,
+              font=_get_font(theme, int(68*font_scale), "bold"),
               fill=(20, 20, 20))
-    y += int(70 * font_scale)
+    y += int(78 * font_scale)
+
+    # Class / Group name (optional)
+    if card.class_name:
+        draw.text((right_x + pad, y),
+                  card.class_name,
+                  font=_get_font(theme, int(40*font_scale), "italic"),
+                  fill=(60, 60, 60))
+        y += int(46 * font_scale)
 
     # Meal + date
     meal_line = f"{card.meal_title} - {card.date_str}"
     draw.text((right_x + pad, y),
               meal_line,
-              font=_get_font(theme, int(44*font_scale), "bold"),
+              font=_get_font(theme, int(48*font_scale), "bold"),
               fill=(20, 20, 20))
-    y += int(32 * font_scale)
+    y += int(36 * font_scale)
 
     # Divider
-    bar_h = int(12 * font_scale)
+    bar_h = int(14 * font_scale)
     draw.rectangle([right_x + pad,
                     y + int(16 * font_scale),
                     W - pad,
                     y + int(16 * font_scale) + bar_h],
                    fill=theme.accent)
-    y += int(44 * font_scale)
+    y += int(48 * font_scale)
 
     # Calories line
     kcal_line = f"{card.total_calories} Calorie Meal"
     draw.text((right_x + pad, y),
               kcal_line,
-              font=_get_font(theme, int(42*font_scale), "bold"),
+              font=_get_font(theme, int(46*font_scale), "bold"),
               fill=(40, 40, 40))
-    y += int(56 * font_scale)
+    y += int(64 * font_scale)
 
     # Sections
-    section_title_font = _get_font(theme, int(38*font_scale), "bold")
-    item_font          = _get_font(theme, int(30*font_scale), "regular")
+    section_title_font = _get_font(theme, int(42*font_scale), "bold")
+    item_font          = _get_font(theme, int(34*font_scale), "regular")
 
-    WRAP_CHARS = 40
+    WRAP_CHARS = 44  # slightly wider lines on the larger canvas
     for sec in card.sections:
-        header_h = int(48 * font_scale)
+        header_h = int(54 * font_scale)
         draw.rectangle([right_x, y, W, y + header_h], fill=theme.accent)
-        draw.text((right_x + pad, y + int(8*font_scale)),
+        draw.text((right_x + pad, y + int(10*font_scale)),
                   sec.name.upper(), font=section_title_font, fill=(255, 255, 255))
-        y += header_h + int(12 * font_scale)
+        y += header_h + int(14 * font_scale)
 
         for it in sec.items:
             line = it.text + (f" - {it.cal} cal" if it.cal is not None else "")
             for wline in textwrap.wrap(line, width=WRAP_CHARS):
                 draw.text((right_x + pad, y), wline, font=item_font, fill=(40, 40, 40))
-                y += int(40 * font_scale)
-        y += int(10 * font_scale)
+                y += int(44 * font_scale)
+        y += int(12 * font_scale)
 
-    # Footer
-    footer_h = int(70 * font_scale)
+    # Footer strip + text
+    footer_h = int(78 * font_scale)
     draw.rectangle([right_x, H - footer_h, W, H], fill=(255, 255, 255))
-    draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(6*font_scale)], fill=theme.accent_light)
+    draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(8*font_scale)], fill=theme.accent_light)
 
-    ft_font = _get_font(theme, int(32*font_scale), "italic")
+    ft_font = _get_font(theme, int(34*font_scale), "italic")
     footer_text = card.footer_text or ""
     try:
         w_ft = draw.textlength(footer_text, font=ft_font)
         h_bbox = ft_font.getbbox(footer_text)
         h_ft = h_bbox[3] - h_bbox[1]
     except Exception:
-        w_ft, h_ft = 200, int(32 * font_scale)
+        w_ft, h_ft = 200, int(34 * font_scale)
     draw.text((W - pad - w_ft, H - footer_h + (footer_h - h_ft)//2),
               footer_text, font=ft_font, fill=theme.accent_light)
 
-    # Optional logo (PNG with alpha)
+    # Optional logo
     if card.logo_path and os.path.exists(card.logo_path):
         try:
             logo = Image.open(card.logo_path).convert("RGBA")
-            target_w = int(220 * font_scale)
+            target_w = int(240 * font_scale)
             scale = target_w / max(1, logo.width)
             logo = logo.resize((int(logo.width*scale), int(logo.height*scale)), resample=Image.LANCZOS)
             lx = W - pad - logo.width
