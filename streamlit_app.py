@@ -10,9 +10,7 @@ DB_PATH = "calorie_app.db"
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def get_conn():
-    return sqlite3.connect(DB_PATH)
-
+def get_conn(): return sqlite3.connect(DB_PATH)
 def init_db():
     with get_conn() as con:
         con.execute("""
@@ -30,7 +28,7 @@ init_db()
 st.set_page_config(page_title="Calorie Cards — Builder + Tracker", layout="wide")
 st.title("🍽️ Calorie Cards — Tracker + Card Generator")
 
-# ---------------- Session-state utils & callbacks ----------------
+# ---------- helpers ----------
 
 def ensure_row_state(prefix: str):
     st.session_state.setdefault(f"{prefix}_txt", "")
@@ -71,7 +69,7 @@ def save_food_to_db(category: str, prefix: str, foods_csv_path="foods.csv"):
     if (df["name"] == name).any():
         df.loc[df["name"] == name, "cal"] = cal
     else:
-        df = pd.concat([df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])],
+        df = pd.concat([df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])]],
                        ignore_index=True)
     df.to_csv(foods_csv_path, index=False)
     st.toast(f"Saved: {name} = {cal} cal")
@@ -81,17 +79,14 @@ def save_food_to_db(category: str, prefix: str, foods_csv_path="foods.csv"):
         pass
     st.rerun()
 
-# ---------------- Sidebar: Brand / Theme / Fonts / Size ----------------
+# ---------- Sidebar: brand & size -----------
 
 with st.sidebar:
     st.header("🎨 Brand / Theme")
     c1, c2, c3 = st.columns(3)
-    panel_hex  = c1.color_picker("Panel", "#FFFFFF", label_visibility="collapsed")
-    c1.caption("Panel")
-    accent_hex = c2.color_picker("Accent", "#6C328C", label_visibility="collapsed")
-    c2.caption("Accent")
-    light_hex  = c3.color_picker("Accent Light", "#965AB4", label_visibility="collapsed")
-    c3.caption("Accent Light")
+    panel_hex  = c1.color_picker("Panel", "#FFFFFF", label_visibility="collapsed"); c1.caption("Panel")
+    accent_hex = c2.color_picker("Accent", "#6C328C", label_visibility="collapsed"); c2.caption("Accent")
+    light_hex  = c3.color_picker("Accent Light", "#965AB4", label_visibility="collapsed"); c3.caption("Accent Light")
 
     def hex_to_rgb(h): return tuple(int(h.lstrip("#")[i:i+2], 16) for i in (0,2,4))
     theme = Theme(
@@ -107,33 +102,21 @@ with st.sidebar:
         Image.open(logo_file).save(logo_path)
 
     st.header("🅰️ Typography & Size")
-    font_scale = st.slider("Font size scale", 1.8, 3.2, 2.6, 0.05)
-    size_label = st.selectbox(
-        "Card size",
-        ["2560 x 1600 (2.5K)", "1920 x 1200 (HD+)", "1600 x 1000"],
-        index=0
-    )
-    if size_label.startswith("2560"):
-        card_size = (2560, 1600)
-    elif size_label.startswith("1920"):
-        card_size = (1920, 1200)
-    else:
-        card_size = (1600, 1000)
-
-    panel_ratio = st.slider("Right panel width (more text space)", 0.40, 0.55, 0.48, 0.01)
+    font_scale = st.slider("Base font size scale", 1.8, 3.2, 2.4, 0.05)
+    size_label = st.selectbox("Card size", ["2560 x 1600 (2.5K)", "1920 x 1200 (HD+)", "1600 x 1000"], index=1)
+    card_size = (2560,1600) if size_label.startswith("2560") else (1920,1200) if size_label.startswith("1920") else (1600,1000)
+    panel_ratio = st.slider("Right panel width (two-panel only)", 0.40, 0.55, 0.48, 0.01)
 
     st.header("🔌 USDA Internet Lookup")
-    # Prefer Streamlit Secrets (Cloud), else ENV, else manual
     def _read_secret(key: str):
         try:
-            _ = st.secrets
             return st.secrets.get(key, None)
         except Exception:
             return None
     FDC_API_KEY = _read_secret("FDC_API_KEY") or os.getenv("FDC_API_KEY") \
                   or st.text_input("FDC API Key (optional)", type="password")
 
-# ---------------- Food DB ----------------
+# ---------- Foods DB ----------
 
 st.subheader("📚 Food Database (click to add)")
 @st.cache_data
@@ -160,17 +143,17 @@ with lcol:
 with rcol:
     st.caption("Search/filter, then add picks in the card builder below.")
 
-# ---------------- Single Card Builder ----------------
+# ---------- Card Builder ----------
 
 st.subheader("🖼️ Build a Single Meal Card")
 form_col, preview_col = st.columns([1,1])
 
 with form_col:
-    program_title = st.text_input("Program Title", value="JOURNEY 3.0")
-    class_name    = st.text_input("Class / Group (optional)", value="")
+    program_title = st.text_input("Program Title", value="40 Day Turn Up")
+    class_name    = st.text_input("Class / Group (optional)", value="I RISE")
     meal_title    = st.text_input("Meal Title", value="Meal 1")
     date_str      = st.text_input("Date (e.g., 10/06/25)", value=dt.date.today().strftime("%-m/%-d/%y"))
-    footer_text   = st.text_input("Footer (Brand/Name)", value="")
+    footer_text   = st.text_input("Footer (Brand/Name)", value="Alphonso Brown")
 
     sections_data = []
     total_calories_calc = 0
@@ -179,7 +162,6 @@ with form_col:
         st.markdown(f"**{sec_name}**")
         items = []
 
-        # quick add from DB
         options = foods_df[foods_df["category"].str.lower()==sec_name.lower()]["name"].tolist()
         picks = st.multiselect(f"Add {sec_name} from DB", options, key=f"picks_{sec_name}")
         for p in picks:
@@ -187,37 +169,33 @@ with form_col:
             items.append({"text": p, "cal": cal})
             total_calories_calc += cal
 
-        # manual rows
+        # cleaner single-row layout
         for i in range(1, 5):
             prefix = f"{sec_name}_{i}"
             ensure_row_state(prefix)
 
-            c1, c2, c3, c4, c5, c6, c7 = st.columns([3, 1.0, 1.0, 1.1, 0.1, 1.0, 1.0])
+            # name | amt | unit | cal | lookup | save
+            c1, c2, c3, c4, c5, c6 = st.columns([4.5, 1.0, 1.2, 1.0, 1.2, 1.2])
 
             with c1:
-                st.text_input(f"{sec_name} item {i} (manual)", key=f"{prefix}_txt")
+                st.text_input(f"{sec_name} item {i} (manual)", key=f"{prefix}_txt", placeholder="e.g., Grilled Lamb")
 
             with c2:
-                st.number_input("amt", key=f"{prefix}_amt", min_value=0.0, step=1.0)
+                st.number_input("amt", key=f"{prefix}_amt", min_value=0.0, step=1.0, label_visibility="visible")
 
             with c3:
-                st.selectbox("unit", ["g","oz","tsp","tbsp","cup"], key=f"{prefix}_unit")
+                st.selectbox("unit", ["g","oz","tsp","tbsp","cup"], key=f"{prefix}_unit", label_visibility="visible")
 
             with c4:
-                st.number_input("cal", key=f"{prefix}_cal", min_value=0, step=1)
+                st.number_input("cal", key=f"{prefix}_cal", min_value=0, step=1, label_visibility="visible")
 
             with c5:
-                st.write("")
+                st.button("Lookup", key=f"lookup_{prefix}", on_click=do_lookup,
+                          args=(prefix, FDC_API_KEY), use_container_width=True)
 
             with c6:
-                st.button("Lookup", key=f"lookup_{prefix}",
-                          on_click=do_lookup, args=(prefix, FDC_API_KEY),
-                          use_container_width=True)
-
-            with c7:
-                st.button("Save", key=f"save_{prefix}",
-                          on_click=save_food_to_db, args=(sec_name, prefix),
-                          use_container_width=True)
+                st.button("Save", key=f"save_{prefix}", on_click=save_food_to_db,
+                          args=(sec_name, prefix), use_container_width=True)
 
             txt  = st.session_state.get(f"{prefix}_txt", "")
             calv = st.session_state.get(f"{prefix}_cal", 0)
@@ -286,7 +264,7 @@ with preview_col:
     else:
         st.info("Generate your first card to see it here.")
 
-# ---------------- Daily Log ----------------
+# ---------- Daily Log ----------
 
 st.subheader("📅 Daily Log & Totals")
 date_filter = st.text_input("Filter by date (e.g., 10/06/25). Leave blank for all.", value="")

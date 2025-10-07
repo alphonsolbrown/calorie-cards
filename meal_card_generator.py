@@ -1,9 +1,9 @@
 # meal_card_generator.py
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
-import os, textwrap
+import os, textwrap, math
 
 # --------------------------- Font + Theme helpers ---------------------------
 
@@ -50,21 +50,16 @@ class Theme:
     font_italic:  str = _resolve_font_path("italic") or ""
 
 def _get_font(theme: Theme, size: int, weight: str = "regular"):
-    """
-    Load a real TrueType font when possible; only last-resort fall back to PIL default.
-    """
     path = theme.font_regular
     if weight == "bold" and theme.font_bold:
         path = theme.font_bold
     elif weight == "italic" and theme.font_italic:
         path = theme.font_italic
-
     if path:
         try:
             return ImageFont.truetype(path, size)
         except Exception:
             pass
-    # absolute last resort
     return ImageFont.load_default()
 
 # --------------------------- Data models ---------------------------
@@ -90,132 +85,248 @@ class MealCardData:
     footer_text: str = ""
     logo_path: Optional[str] = None
 
-# --------------------------- Renderer ---------------------------
+# --------------------------- Utilities ---------------------------
+
+def _wrap_lines(text: str, width_chars: int) -> List[str]:
+    width_chars = max(10, width_chars)
+    return textwrap.wrap(text, width=width_chars)
+
+def _draw_photo_to_rect(canvas: Image.Image, photo_path: str, rect: Tuple[int,int,int,int]):
+    x0, y0, x1, y1 = rect
+    w, h = x1 - x0, y1 - y0
+    draw = ImageDraw.Draw(canvas)
+    if not os.path.exists(photo_path):
+        draw.rectangle(rect, fill=(230,230,230))
+        return
+    photo = Image.open(photo_path).convert("RGB")
+    try:
+        resample = Image.Resampling.LANCZOS
+    except Exception:
+        resample = Image.LANCZOS
+    ratio = max(w / photo.width, h / photo.height)
+    new_sz = (max(1,int(photo.width*ratio)), max(1,int(photo.height*ratio)))
+    photo = photo.resize(new_sz, resample)
+    px0 = max(0, (photo.width - w) // 2)
+    py0 = max(0, (photo.height - h) // 2)
+    crop = photo.crop((px0, py0, px0 + w, py0 + h))
+    canvas.paste(crop, (x0, y0))
+
+def _estimate_section_height(sec: MealSection, right_w_px: int, fscale: float) -> int:
+    """
+    Quick estimate for required height of a section with given width and font scale.
+    Used to auto-fit font size to the available panel height.
+    """
+    header_h = int(64 * fscale)
+    item_line_h = int(50 * fscale)
+    # very rough chars-per-line heuristic
+    avg_char_px = max(1, int(20 * fscale))
+    chars = max(26, min(60, right_w_px // avg_char_px))
+    lines = 0
+    for it in sec.items:
+        line = it.text + (f" - {it.cal} cal" if it.cal is not None else "")
+        lines += max(1, len(_wrap_lines(line, chars)))
+    content_h = lines * item_line_h + int(16 * fscale)
+    return header_h + int(20 * fscale) + content_h
+
+def _fit_font_scale_for_panels(panel_heights: Dict[str,int],
+                               sections_by_panel: Dict[str,List[MealSection]],
+                               right_w_px: int,
+                               base_scale: float) -> float:
+    """
+    Given per-panel heights and the sections assigned to each panel,
+    reduce (or slightly increase) font scale so content fits.
+    """
+    scale = base_scale
+    for _ in range(24):  # iterate to converge
+        ok = True
+        for key, h in panel_heights.items():
+            secs = sections_by_panel.get(key, [])
+            need = sum(_estimate_section_height(s, right_w_px, scale) for s in secs)
+            if need > h:
+                ok = False
+                ratio = h / max(1, need)
+                # move 70% toward the target each step (faster than tiny decrements)
+                scale = max(1.2, scale * (0.7 + 0.3 * ratio))
+        if ok:
+            break
+    return scale
+
+# --------------------------- Renderers ---------------------------
+
+def _draw_sections_block(draw: ImageDraw.ImageDraw, theme: Theme, x: int, y: int,
+                         w: int, h: int, sections: List[MealSection], fscale: float):
+    """
+    Render a vertical block of sections into a rectangle (x,y,w,h).
+    Assumes fscale already fitted for the panel.
+    """
+    # backgrounds
+    draw.rectangle([x, y, x+w, y+h], fill=theme.panel_color)
+
+    section_title_font = _get_font(theme, int(52 * fscale), "bold")
+    item_font          = _get_font(theme, int(42 * fscale), "regular")
+    pad = int(30 * fscale)
+    yy = y + pad
+    bar_h = int(64 * fscale)
+
+    # chars per line
+    avg_char_px = max(1, int(20 * fscale))
+    WRAP = max(26, min(60, (w - 2*pad) // avg_char_px))
+
+    for sec in sections:
+        draw.rectangle([x, yy, x + w, yy + bar_h], fill=theme.accent)
+        draw.text((x + pad, yy + int(12 * fscale)), sec.name.upper(),
+                  font=section_title_font, fill=(255,255,255))
+        yy += bar_h + int(20 * fscale)
+
+        for it in sec.items:
+            line = it.text + (f" - {it.cal} cal" if it.cal is not None else "")
+            for wline in _wrap_lines(line, WRAP):
+                draw.text((x + pad, yy), wline, font=item_font, fill=(40,40,40))
+                yy += int(50 * fscale)
+        yy += int(10 * fscale)
+
+def _draw_header_block(draw: ImageDraw.ImageDraw, theme: Theme,
+                       x: int, y: int, w: int, fscale: float,
+                       program_title: str, class_name: str,
+                       meal_line: str, total_kcal: int):
+    pad = int(30 * fscale)
+    yy = y + pad
+
+    draw.text((x + pad, yy), program_title,
+              font=_get_font(theme, int(84 * fscale), "bold"), fill=(20,20,20))
+    yy += int(98 * fscale)
+
+    if class_name:
+        draw.text((x + pad, yy), class_name,
+                  font=_get_font(theme, int(50 * fscale), "italic"), fill=(60,60,60))
+        yy += int(60 * fscale)
+
+    draw.text((x + pad, yy), meal_line,
+              font=_get_font(theme, int(62 * fscale), "bold"), fill=(20,20,20))
+    yy += int(44 * fscale)
+    draw.rectangle([x + pad, yy + int(16 * fscale), x + w - pad, yy + int(16 * fscale) + int(18 * fscale)],
+                   fill=theme.accent)
+    yy += int(60 * fscale)
+
+    kcal_line = f"{total_kcal} Calorie Meal"
+    draw.text((x + pad, yy), kcal_line,
+              font=_get_font(theme, int(60 * fscale), "bold"), fill=(40,40,40))
 
 def render_meal_card(
     card: MealCardData,
     photo_path: str,
     output_path: str = "meal_card.png",
-    size: Tuple[int, int] = (2560, 1600),            # big, sharp default
+    size: Tuple[int, int] = (2560, 1600),
     theme: Theme = Theme(),
-    font_scale: float = 2.4,                        # tuned for “nice sized” fonts
-    panel_ratio: float = 0.48,                      # right panel width (0.40–0.55)
+    font_scale: float = 2.4,               # starting point; will auto-fit
+    panel_ratio: float = 0.48,             # for two-panel only
+    items_threshold_for_grid: int = 6      # switch to four-panel when more than this many items
 ) -> str:
-    """
-    Render meal card PNG. size + font_scale + panel_ratio must match your UI settings
-    so preview == saved PNG.
-    """
     W, H = size
     img = Image.new("RGB", size, (245, 245, 245))
     draw = ImageDraw.Draw(img)
+    pad = int(36 * (W / 2560))
 
-    # layout
-    pad = int(36 * (W / 2560))                      # scale pad with canvas
-    left_w = int(W * (1 - panel_ratio))             # photo width
-    right_x = left_w                                # right panel x
+    # Count items
+    total_items = sum(len(s.items) for s in card.sections)
 
-    # --- Left photo ---
-    if os.path.exists(photo_path):
-        photo = Image.open(photo_path).convert("RGB")
-        ratio = max(left_w / photo.width, H / photo.height)
-        new_sz = (int(photo.width * ratio), int(photo.height * ratio))
-        try:
-            resample = Image.Resampling.LANCZOS
-        except Exception:
-            resample = Image.LANCZOS
-        photo = photo.resize(new_sz, resample)
-        x0 = max(0, (photo.width - left_w) // 2)
-        y0 = max(0, (photo.height - H) // 2)
-        img.paste(photo.crop((x0, y0, x0 + left_w, y0 + H)), (0, 0))
+    if total_items <= items_threshold_for_grid:
+        # ---------------- Two-panel layout ----------------
+        left_w = int(W * (1 - panel_ratio))          # photo
+        right_x = left_w
+        _draw_photo_to_rect(img, photo_path, (0, 0, left_w, H))
+
+        # Fit font for the full right panel content (all sections together)
+        right_w = W - right_x
+        sections_panels = {"right": card.sections}
+        heights = {"right": H - 2*pad}
+        fitted_scale = _fit_font_scale_for_panels(
+            heights, sections_panels, right_w - 2*pad, font_scale
+        )
+
+        # Header at top of right
+        _draw_header_block(draw, theme, right_x, 0, right_w, fitted_scale,
+                           card.program_title, card.class_name,
+                           f"{card.meal_title} - {card.date_str}",
+                           card.total_calories)
+
+        # Sections under header
+        header_space = int(240 * fitted_scale) + int(60 * fitted_scale)
+        _draw_sections_block(draw, theme,
+                             right_x, header_space,
+                             right_w, H - header_space,
+                             card.sections, fitted_scale)
+
+        # Footer line
+        footer_h = int(86 * fitted_scale)
+        draw.rectangle([right_x, H - footer_h, W, H], fill=(255,255,255))
+        draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(12 * fitted_scale)], fill=theme.accent_light)
+        if card.footer_text:
+            ft_font = _get_font(theme, int(40 * fitted_scale), "italic")
+            txt = card.footer_text
+            try:
+                w_ft = draw.textlength(txt, font=ft_font)
+            except Exception:
+                w_ft = 220
+            draw.text((W - pad - w_ft, H - footer_h + int(footer_h*0.35)),
+                      txt, font=ft_font, fill=theme.accent_light)
+
     else:
-        draw.rectangle([0, 0, left_w, H], fill=(230, 230, 230))
-        draw.text((pad, pad), "PHOTO NOT FOUND",
-                  font=_get_font(theme, int(40 * font_scale), "bold"),
-                  fill=(120, 120, 120))
+        # ---------------- Four-panel grid ----------------
+        # grid with a small gutter
+        gutter = int(24 * (W / 2560))
+        col_w = (W - 3*gutter) // 2
+        row_h = (H - 3*gutter) // 2
 
-    # --- Right panel ---
-    draw.rectangle([right_x, 0, W, H], fill=theme.panel_color)
-    y = pad
+        # assign sections to panels
+        secs_map = {s.name.strip().upper(): s for s in card.sections}
+        sec_prot = secs_map.get("PROTEIN", MealSection("PROTEIN", []))
+        sec_carb = secs_map.get("CARB", MealSection("CARB", []))
+        sec_fat  = secs_map.get("FAT",  MealSection("FAT",  []))
 
-    # Header: Program
-    draw.text((right_x + pad, y), card.program_title,
-              font=_get_font(theme, int(84 * font_scale), "bold"), fill=(20, 20, 20))
-    y += int(98 * font_scale)
+        # Photo: top-left
+        x0 = gutter;          y0 = gutter
+        x1 = x0 + col_w;      y1 = y0 + row_h
+        _draw_photo_to_rect(img, photo_path, (x0, y0, x1, y1))
 
-    # Class / Group (optional)
-    if card.class_name:
-        draw.text((right_x + pad, y), card.class_name,
-                  font=_get_font(theme, int(50 * font_scale), "italic"), fill=(60, 60, 60))
-        y += int(60 * font_scale)
+        # Bottom-left: header + protein
+        bl_x = gutter; bl_y = 2*gutter + row_h
+        _draw_header_block(draw, theme, bl_x, bl_y, col_w, font_scale,
+                           card.program_title, card.class_name,
+                           f"{card.meal_title} - {card.date_str}",
+                           card.total_calories)
+        # Keep some space under header
+        header_h = int(240 * font_scale) + int(50 * font_scale)
+        sec_area_h = row_h - header_h
+        # Fit for protein block only
+        fitted_bl = _fit_font_scale_for_panels(
+            {"bl": sec_area_h}, {"bl": [sec_prot]}, col_w - 2*int(30*font_scale), font_scale
+        )
+        _draw_sections_block(draw, theme, bl_x, bl_y + header_h, col_w, sec_area_h,
+                             [sec_prot], fitted_bl)
 
-    # Meal + date
-    meal_line = f"{card.meal_title} - {card.date_str}"
-    draw.text((right_x + pad, y), meal_line,
-              font=_get_font(theme, int(62 * font_scale), "bold"), fill=(20, 20, 20))
-    y += int(44 * font_scale)
+        # Top-right: carbs
+        tr_x = 2*gutter + col_w; tr_y = gutter
+        fitted_tr = _fit_font_scale_for_panels(
+            {"tr": row_h - 2*int(30*font_scale)}, {"tr": [sec_carb]}, col_w - 2*int(30*font_scale), font_scale
+        )
+        _draw_sections_block(draw, theme, tr_x, tr_y, col_w, row_h, [sec_carb], fitted_tr)
 
-    # Divider
-    bar_h = int(18 * font_scale)
-    draw.rectangle([right_x + pad, y + int(16 * font_scale), W - pad, y + int(16 * font_scale) + bar_h],
-                   fill=theme.accent)
-    y += int(60 * font_scale)
+        # Bottom-right: fats
+        br_x = 2*gutter + col_w; br_y = 2*gutter + row_h
+        fitted_br = _fit_font_scale_for_panels(
+            {"br": row_h - 2*int(30*font_scale)}, {"br": [sec_fat]}, col_w - 2*int(30*font_scale), font_scale
+        )
+        _draw_sections_block(draw, theme, br_x, br_y, col_w, row_h, [sec_fat], fitted_br)
 
-    # Total calories line
-    kcal_line = f"{card.total_calories} Calorie Meal"
-    draw.text((right_x + pad, y), kcal_line,
-              font=_get_font(theme, int(60 * font_scale), "bold"), fill=(40, 40, 40))
-    y += int(84 * font_scale)
-
-    # Section fonts
-    section_title_font = _get_font(theme, int(52 * font_scale), "bold")
-    item_font          = _get_font(theme, int(42 * font_scale), "regular")
-
-    # Wrap width — rough heuristic by panel width and font size
-    right_w = W - right_x - pad - pad
-    avg_char_px = max(1, int(20 * font_scale))
-    WRAP_CHARS = max(28, min(52, right_w // avg_char_px))
-
-    # Sections
-    for sec in card.sections:
-        header_h = int(64 * font_scale)
-        draw.rectangle([right_x, y, W, y + header_h], fill=theme.accent)
-        draw.text((right_x + pad, y + int(12 * font_scale)),
-                  sec.name.upper(), font=section_title_font, fill=(255, 255, 255))
-        y += header_h + int(20 * font_scale)
-
-        for it in sec.items:
-            line = it.text + (f" - {it.cal} cal" if it.cal is not None else "")
-            for wline in textwrap.wrap(line, width=WRAP_CHARS):
-                draw.text((right_x + pad, y), wline, font=item_font, fill=(40, 40, 40))
-                y += int(50 * font_scale)
-        y += int(16 * font_scale)
-
-    # Footer strip + text
-    footer_h = int(86 * font_scale)
-    draw.rectangle([right_x, H - footer_h, W, H], fill=(255, 255, 255))
-    draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(12 * font_scale)], fill=theme.accent_light)
-
-    ft_font = _get_font(theme, int(40 * font_scale), "italic")
-    footer_text = card.footer_text or ""
-    try:
-        w_ft = draw.textlength(footer_text, font=ft_font)
-        h_bbox = ft_font.getbbox(footer_text)
-        h_ft = h_bbox[3] - h_bbox[1]
-    except Exception:
-        w_ft, h_ft = 240, int(40 * font_scale)
-    draw.text((W - pad - w_ft, H - footer_h + (footer_h - h_ft)//2),
-              footer_text, font=ft_font, fill=theme.accent_light)
-
-    # Optional logo (RGBA)
+    # Optional logo
     if card.logo_path and os.path.exists(card.logo_path):
         try:
             logo = Image.open(card.logo_path).convert("RGBA")
             target_w = int(280 * font_scale)
             scale = target_w / max(1, logo.width)
             logo = logo.resize((int(logo.width*scale), int(logo.height*scale)), resample=Image.LANCZOS)
-            lx = W - pad - logo.width
-            ly = pad
-            img.paste(logo, (lx, ly), logo)
+            img.paste(logo, (W - logo.width - pad, pad), logo)
         except Exception:
             pass
 
