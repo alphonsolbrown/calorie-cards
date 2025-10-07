@@ -2,9 +2,73 @@
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
 import os, textwrap
 
-# ---------- Data models ----------
+# --------------------------- Font + Theme helpers ---------------------------
+
+def _first_existing(paths):
+    for p in paths:
+        if p and Path(p).exists():
+            return str(p)
+    return None
+
+def _resolve_font_path(kind: str) -> str | None:
+    """
+    Returns a usable TTF path for 'regular' | 'bold' | 'italic'.
+    Priority: bundled fonts/  -> common Linux -> Windows -> None
+    """
+    here = Path(__file__).parent
+    bundled = {
+        "regular": here / "fonts" / "DejaVuSans.ttf",
+        "bold":    here / "fonts" / "DejaVuSans-Bold.ttf",
+        "italic":  here / "fonts" / "DejaVuSans-Oblique.ttf",
+    }[kind]
+
+    linux_candidates = {
+        "regular": ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"],
+        "bold":    ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
+        "italic":  ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"],
+    }[kind]
+
+    win = Path("C:/Windows/Fonts")
+    win_candidates = {
+        "regular": [win / "arial.ttf"],
+        "bold":    [win / "arialbd.ttf"],
+        "italic":  [win / "ariali.ttf"],
+    }[kind]
+
+    return _first_existing([bundled, *linux_candidates, *win_candidates])
+
+@dataclass
+class Theme:
+    panel_color: Tuple[int, int, int] = (255, 255, 255)
+    accent: Tuple[int, int, int] = (108, 50, 140)
+    accent_light: Tuple[int, int, int] = (150, 90, 180)
+    font_regular: str = _resolve_font_path("regular") or ""
+    font_bold:    str = _resolve_font_path("bold") or ""
+    font_italic:  str = _resolve_font_path("italic") or ""
+
+def _get_font(theme: Theme, size: int, weight: str = "regular"):
+    """
+    Load a real TrueType font when possible; only last-resort fall back to PIL default.
+    """
+    path = theme.font_regular
+    if weight == "bold" and theme.font_bold:
+        path = theme.font_bold
+    elif weight == "italic" and theme.font_italic:
+        path = theme.font_italic
+
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            pass
+    # absolute last resort
+    return ImageFont.load_default()
+
+# --------------------------- Data models ---------------------------
+
 @dataclass
 class MealItem:
     text: str
@@ -16,60 +80,41 @@ class MealSection:
     items: List[MealItem]
 
 @dataclass
-class Theme:
-    panel_color: Tuple[int, int, int] = (255, 255, 255)
-    accent: Tuple[int, int, int] = (108, 50, 140)
-    accent_light: Tuple[int, int, int] = (150, 90, 180)
-    # Windows-safe defaults; will fall back to PIL default if not found
-    font_regular: str = "C:/Windows/Fonts/arial.ttf"
-    font_bold:    str = "C:/Windows/Fonts/arialbd.ttf"
-    font_italic:  str = "C:/Windows/Fonts/ariali.ttf"
-
-@dataclass
 class MealCardData:
     program_title: str = "Program"
-    class_name: str = ""      # New: Class/Group name
+    class_name: str = ""
     meal_title: str = "Meal"
     date_str: str = "MM/DD/YY"
     total_calories: int = 400
     sections: List[MealSection] = field(default_factory=list)
     footer_text: str = ""
-    logo_path: Optional[str] = None  # optional PNG with alpha
+    logo_path: Optional[str] = None
 
-# ---------- Font helper ----------
-def _get_font(theme: Theme, size: int, weight: str = "regular"):
-    try:
-        if weight == "bold":
-            return ImageFont.truetype(theme.font_bold, size)
-        if weight == "italic":
-            return ImageFont.truetype(theme.font_italic, size)
-        return ImageFont.truetype(theme.font_regular, size)
-    except Exception:
-        return ImageFont.load_default()
+# --------------------------- Renderer ---------------------------
 
-# ---------- Renderer ----------
 def render_meal_card(
     card: MealCardData,
     photo_path: str,
     output_path: str = "meal_card.png",
-    #size: Tuple[int, int] = (2560, 1600),   # large default canvas (sharp PNG)
-    size: Tuple[int, int] = (1600, 1000),   # trying a smaller canvas for words to be bigger
+    size: Tuple[int, int] = (2560, 1600),            # big, sharp default
     theme: Theme = Theme(),
-    font_scale: float = 1.85,               # tuned for “nice sized” fonts
-    panel_ratio: float = 0.46,
+    font_scale: float = 2.4,                        # tuned for “nice sized” fonts
+    panel_ratio: float = 0.48,                      # right panel width (0.40–0.55)
 ) -> str:
     """
-    Renders the meal card PNG. The same size+font_scale you pass here will be used
-    by the Streamlit preview so what-you-see-is-what-you-save.
+    Render meal card PNG. size + font_scale + panel_ratio must match your UI settings
+    so preview == saved PNG.
     """
     W, H = size
     img = Image.new("RGB", size, (245, 245, 245))
     draw = ImageDraw.Draw(img)
-    pad = int(36 * (W / 2560))  # scale padding with width
-    left_w = int(W * (1 - panel_ratio))      # photo area width
-    right_x = left_w
 
-    # ---- Left photo ----
+    # layout
+    pad = int(36 * (W / 2560))                      # scale pad with canvas
+    left_w = int(W * (1 - panel_ratio))             # photo width
+    right_x = left_w                                # right panel x
+
+    # --- Left photo ---
     if os.path.exists(photo_path):
         photo = Image.open(photo_path).convert("RGB")
         ratio = max(left_w / photo.width, H / photo.height)
@@ -85,98 +130,87 @@ def render_meal_card(
     else:
         draw.rectangle([0, 0, left_w, H], fill=(230, 230, 230))
         draw.text((pad, pad), "PHOTO NOT FOUND",
-                  font=_get_font(theme, int(36*font_scale), "bold"),
+                  font=_get_font(theme, int(40 * font_scale), "bold"),
                   fill=(120, 120, 120))
 
-    # ---- Right panel ----
+    # --- Right panel ---
     draw.rectangle([right_x, 0, W, H], fill=theme.panel_color)
-
     y = pad
 
-    # Program title
-    draw.text((right_x + pad, y),
-              card.program_title,
-              font=_get_font(theme, int(84*font_scale), "bold"),
-              fill=(20, 20, 20))
-    y += int(84 * font_scale)
+    # Header: Program
+    draw.text((right_x + pad, y), card.program_title,
+              font=_get_font(theme, int(84 * font_scale), "bold"), fill=(20, 20, 20))
+    y += int(98 * font_scale)
 
-    # Class / Group name (optional)
+    # Class / Group (optional)
     if card.class_name:
-        draw.text((right_x + pad, y),
-                  card.class_name,
-                  font=_get_font(theme, int(50*font_scale), "italic"),
-                  fill=(60, 60, 60))
-        y += int(52 * font_scale)
+        draw.text((right_x + pad, y), card.class_name,
+                  font=_get_font(theme, int(50 * font_scale), "italic"), fill=(60, 60, 60))
+        y += int(60 * font_scale)
 
     # Meal + date
     meal_line = f"{card.meal_title} - {card.date_str}"
-    draw.text((right_x + pad, y),
-              meal_line,
-              font=_get_font(theme, int(62*font_scale), "bold"),
-              fill=(20, 20, 20))
-    y += int(40 * font_scale)
+    draw.text((right_x + pad, y), meal_line,
+              font=_get_font(theme, int(62 * font_scale), "bold"), fill=(20, 20, 20))
+    y += int(44 * font_scale)
 
     # Divider
-    bar_h = int(16 * font_scale)
-    draw.rectangle([right_x + pad,
-                    y + int(16 * font_scale),
-                    W - pad,
-                    y + int(16 * font_scale) + bar_h],
+    bar_h = int(18 * font_scale)
+    draw.rectangle([right_x + pad, y + int(16 * font_scale), W - pad, y + int(16 * font_scale) + bar_h],
                    fill=theme.accent)
-    y += int(52 * font_scale)
+    y += int(60 * font_scale)
 
-    # Calories line
+    # Total calories line
     kcal_line = f"{card.total_calories} Calorie Meal"
-    draw.text((right_x + pad, y),
-              kcal_line,
-              font=_get_font(theme, int(60*font_scale), "bold"),
-              fill=(40, 40, 40))
-    y += int(72 * font_scale)
+    draw.text((right_x + pad, y), kcal_line,
+              font=_get_font(theme, int(60 * font_scale), "bold"), fill=(40, 40, 40))
+    y += int(84 * font_scale)
 
-    # Sections
-    section_title_font = _get_font(theme, int(44*font_scale), "bold")
-    item_font          = _get_font(theme, int(42*font_scale), "regular")
+    # Section fonts
+    section_title_font = _get_font(theme, int(52 * font_scale), "bold")
+    item_font          = _get_font(theme, int(42 * font_scale), "regular")
 
-    # Wrap width scales with right panel width (~38% of W)
+    # Wrap width — rough heuristic by panel width and font size
     right_w = W - right_x - pad - pad
-    avg_char_px = max(1, int(20 * font_scale))  # rough average
+    avg_char_px = max(1, int(20 * font_scale))
     WRAP_CHARS = max(28, min(52, right_w // avg_char_px))
 
+    # Sections
     for sec in card.sections:
-        header_h = int(58 * font_scale)
+        header_h = int(64 * font_scale)
         draw.rectangle([right_x, y, W, y + header_h], fill=theme.accent)
-        draw.text((right_x + pad, y + int(10*font_scale)),
+        draw.text((right_x + pad, y + int(12 * font_scale)),
                   sec.name.upper(), font=section_title_font, fill=(255, 255, 255))
-        y += header_h + int(16 * font_scale)
+        y += header_h + int(20 * font_scale)
 
         for it in sec.items:
             line = it.text + (f" - {it.cal} cal" if it.cal is not None else "")
             for wline in textwrap.wrap(line, width=WRAP_CHARS):
                 draw.text((right_x + pad, y), wline, font=item_font, fill=(40, 40, 40))
-                y += int(46 * font_scale)
-        y += int(14 * font_scale)
+                y += int(50 * font_scale)
+        y += int(16 * font_scale)
 
     # Footer strip + text
-    footer_h = int(82 * font_scale)
+    footer_h = int(86 * font_scale)
     draw.rectangle([right_x, H - footer_h, W, H], fill=(255, 255, 255))
-    draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(10*font_scale)], fill=theme.accent_light)
+    draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(12 * font_scale)], fill=theme.accent_light)
 
-    ft_font = _get_font(theme, int(40*font_scale), "italic")
+    ft_font = _get_font(theme, int(40 * font_scale), "italic")
     footer_text = card.footer_text or ""
     try:
         w_ft = draw.textlength(footer_text, font=ft_font)
         h_bbox = ft_font.getbbox(footer_text)
         h_ft = h_bbox[3] - h_bbox[1]
     except Exception:
-        w_ft, h_ft = 200, int(36 * font_scale)
+        w_ft, h_ft = 240, int(40 * font_scale)
     draw.text((W - pad - w_ft, H - footer_h + (footer_h - h_ft)//2),
               footer_text, font=ft_font, fill=theme.accent_light)
 
-    # Optional logo
+    # Optional logo (RGBA)
     if card.logo_path and os.path.exists(card.logo_path):
         try:
             logo = Image.open(card.logo_path).convert("RGBA")
-            target_w = int(260 * font_scale)
+            target_w = int(280 * font_scale)
             scale = target_w / max(1, logo.width)
             logo = logo.resize((int(logo.width*scale), int(logo.height*scale)), resample=Image.LANCZOS)
             lx = W - pad - logo.width
