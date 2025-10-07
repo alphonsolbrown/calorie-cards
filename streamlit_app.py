@@ -2,6 +2,8 @@
 import os, json, sqlite3, datetime as dt
 import pandas as pd
 import streamlit as st
+import warnings
+warnings.filterwarnings("ignore", message="use_container_width will be removed")
 from PIL import Image
 from meal_card_generator import MealCardData, MealSection, MealItem, render_meal_card, Theme
 
@@ -161,7 +163,7 @@ with preview_col:
     st.subheader("Latest Card")
     df_all = pd.read_sql_query("SELECT * FROM entries ORDER BY date DESC, id DESC", get_conn())
     if len(df_all) and df_all.iloc[0]["image_path"] and os.path.exists(df_all.iloc[0]["image_path"]):
-        st.image(df_all.iloc[0]["image_path"], use_container_width=True, caption=df_all.iloc[0]["meal_title"])
+        st.image(df_all.iloc[0]["image_path"], width="stretch", caption=df_all.iloc[0]["meal_title"])
     else:
         st.info("Generate your first card to see it here.")
 
