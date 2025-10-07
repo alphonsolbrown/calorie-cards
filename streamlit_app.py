@@ -10,26 +10,6 @@ DB_PATH = "calorie_app.db"
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ---- Safe callback to update calories for a row ----
-def do_lookup(prefix: str, api_key: str):
-    """
-    prefix identifies the row, e.g. 'PROTEIN_1' or 'CARB_3'.
-    Reads txt/amt/unit from session_state and writes the estimate into '<prefix>_cal'.
-    """
-    try:
-        txt  = st.session_state.get(f"{prefix}_txt", "") or ""
-        amt  = st.session_state.get(f"{prefix}_amt", 0.0) or 0.0
-        unit = st.session_state.get(f"{prefix}_unit", "g") or "g"
-        if not api_key or not txt.strip():
-            # nothing to do; leave existing value in place
-            return
-        est = fdc_lookup_kcal(txt, float(amt), unit, api_key)
-        if est is not None:
-            st.session_state[f"{prefix}_cal"] = est  # safe inside a callback
-    except Exception:
-        # don't crash the app if something odd happens
-        pass
-
 def get_conn():
     return sqlite3.connect(DB_PATH)
 
@@ -50,11 +30,59 @@ init_db()
 st.set_page_config(page_title="Calorie Cards — Builder + Tracker", layout="wide")
 st.title("🍽️ Calorie Cards — Tracker + Card Generator")
 
-# ------------- Sidebar: Brand / Theme / Fonts / Size / API -------------
+# ---------- Helpers for session state / lookup / saving to DB ----------
+def ensure_row_state(prefix: str):
+    st.session_state.setdefault(f"{prefix}_txt", "")
+    st.session_state.setdefault(f"{prefix}_amt", 0.0)
+    st.session_state.setdefault(f"{prefix}_unit", "g")
+    st.session_state.setdefault(f"{prefix}_cal", 0)
+
+def do_lookup(prefix: str, api_key: str):
+    try:
+        txt  = st.session_state.get(f"{prefix}_txt", "") or ""
+        amt  = float(st.session_state.get(f"{prefix}_amt", 0.0) or 0.0)
+        unit = st.session_state.get(f"{prefix}_unit", "g") or "g"
+        if api_key and txt.strip():
+            est = fdc_lookup_kcal(txt, amt, unit, api_key)
+            if est is not None:
+                st.session_state[f"{prefix}_cal"] = int(est)
+    except Exception:
+        pass
+    finally:
+        st.rerun()
+
+def save_food_to_db(category: str, prefix: str, foods_csv_path="foods.csv"):
+    txt  = (st.session_state.get(f"{prefix}_txt") or "").strip()
+    amt  = st.session_state.get(f"{prefix}_amt") or 0.0
+    unit = (st.session_state.get(f"{prefix}_unit") or "g").strip()
+    cal  = int(st.session_state.get(f"{prefix}_cal") or 0)
+    if not txt or cal <= 0:
+        st.warning("Add a name and calories first.")
+        return
+    nice_amt = f"{float(amt):g}"
+    name = f"{txt} {nice_amt} {unit}"  # preferred readable style
+
+    if os.path.exists(foods_csv_path):
+        df = pd.read_csv(foods_csv_path)
+    else:
+        df = pd.DataFrame(columns=["category", "name", "cal"])
+
+    if (df["name"] == name).any():
+        df.loc[df["name"] == name, "cal"] = cal
+    else:
+        df = pd.concat([df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])],
+                       ignore_index=True)
+    df.to_csv(foods_csv_path, index=False)
+    st.toast(f"Saved to Food DB: {name} = {cal} cal")
+    try:
+        load_foods.clear()
+    except Exception:
+        pass
+    st.rerun()
+
+# ---------- Sidebar: Brand / Theme / Font / Size / API ----------
 with st.sidebar:
     st.header("🎨 Brand / Theme")
-
-    # align color boxes on one row
     c1, c2, c3 = st.columns(3)
     panel_hex  = c1.color_picker("Panel", "#FFFFFF", label_visibility="collapsed")
     c1.caption("Panel")
@@ -77,7 +105,8 @@ with st.sidebar:
         Image.open(logo_file).save(logo_path)
 
     st.header("🅰️ Typography & Size")
-    font_scale = st.slider("Font size scale", 1.0, 2.5, 1.7, 0.05)
+    font_scale = st.slider("Font size scale", 1.6, 3.2, 2.4, 0.05)
+    panel_ratio = st.slider("Right panel width (more text space)", 0.40, 0.55, 0.46, 0.01)
     size_label = st.selectbox(
         "Card size",
         ["2560 x 1600 (2.5K)", "1920 x 1200 (HD+)", "1600 x 1000 (Standard)"],
@@ -90,27 +119,33 @@ with st.sidebar:
     else:
         card_size = (1600, 1000)
 
-    st.header("🔌 Internet Calorie Lookup")
-    # Use Streamlit secrets if available; fall back to env var; last resort: text input
-    FDC_API_KEY = st.secrets.get("FDC_API_KEY", None) or os.getenv("FDC_API_KEY") \
+    st.header("🔌 USDA Internet Lookup")
+    # Secrets → ENV → manual
+    def _read_secret(key: str):
+        try:
+            _ = st.secrets
+            return st.secrets.get(key, None)
+        except Exception:
+            return None
+    FDC_API_KEY = _read_secret("FDC_API_KEY") or os.getenv("FDC_API_KEY") \
                   or st.text_input("FDC API Key (optional)", type="password")
 
-# ------------- Food Database -------------
+# ---------- Food DB ----------
 st.subheader("📚 Food Database (click to add)")
 @st.cache_data
 def load_foods():
     path = "foods.csv"
     if not os.path.exists(path):
         pd.DataFrame([
-            {"category": "Protein", "name": "Baked Cod 4 oz",            "cal": 138},
-            {"category": "Protein", "name": "Grilled Chicken 4 oz",      "cal": 170},
-            {"category": "Protein", "name": "Salmon 4 oz",               "cal": 233},
-            {"category": "Carb",    "name": "Mixed Veggies 1 cup",       "cal": 70},
-            {"category": "Carb",    "name": "Cucumber chopped 1 cup",    "cal": 16},
-            {"category": "Carb",    "name": "Tomatoes chopped 1/2 cup",  "cal": 8},
-            {"category": "Carb",    "name": "Nectarine 1",               "cal": 60},
-            {"category": "Fat",     "name": "Olive Oil 1 tsp",           "cal": 40},
-            {"category": "Fat",     "name": "Butter 1 tsp",              "cal": 33},
+            {"category": "Protein", "name": "Baked Cod 4 oz",           "cal": 138},
+            {"category": "Protein", "name": "Grilled Chicken 4 oz",     "cal": 170},
+            {"category": "Protein", "name": "Salmon 4 oz",              "cal": 233},
+            {"category": "Carb",    "name": "Mixed Veggies 1 cup",      "cal": 70},
+            {"category": "Carb",    "name": "Cucumber chopped 1 cup",   "cal": 16},
+            {"category": "Carb",    "name": "Tomatoes chopped 1/2 cup", "cal": 8},
+            {"category": "Carb",    "name": "Nectarine 1",              "cal": 60},
+            {"category": "Fat",     "name": "Olive Oil 1 tsp",          "cal": 40},
+            {"category": "Fat",     "name": "Butter 1 tsp",             "cal": 33},
         ]).to_csv(path, index=False)
     return pd.read_csv(path)
 
@@ -121,7 +156,7 @@ with lcol:
 with rcol:
     st.caption("Filter/search the table, then add picks in the card builder below.")
 
-# ------------- Single Card Builder -------------
+# ---------- Single Card Builder ----------
 st.subheader("🖼️ Build a Single Meal Card")
 form_col, preview_col = st.columns([1,1])
 
@@ -139,6 +174,7 @@ with form_col:
         st.markdown(f"**{sec_name}**")
         items = []
 
+        # quick add from DB
         options = foods_df[foods_df["category"].str.lower()==sec_name.lower()]["name"].tolist()
         picks = st.multiselect(f"Add {sec_name} from DB", options, key=f"picks_{sec_name}")
         for p in picks:
@@ -146,46 +182,67 @@ with form_col:
             items.append({"text": p, "cal": cal})
             total_calories_calc += cal
 
-        # 4 manual rows with Lookup button
+        # manual rows (Lookup on same row; Save to add to DB)
         for i in range(1, 5):
             prefix = f"{sec_name}_{i}"
-            c1, c2, c3, c4, c5 = st.columns([3,1.2,1.2,1.2,1.2])
+            ensure_row_state(prefix)
+
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([3, 1.0, 1.0, 1.1, 0.1, 1.0, 1.0])
 
             with c1:
-                st.text_input(f"{sec_name} item {i} (manual)", key=f"{prefix}_txt")
+                st.text_input(f"{sec_name} item {i} (manual)",
+                              key=f"{prefix}_txt",
+                              value=st.session_state[f"{prefix}_txt"])
 
             with c2:
-                st.number_input("amt", value=0.0, min_value=0.0, step=1.0, key=f"{prefix}_amt")
+                st.number_input("amt",
+                                key=f"{prefix}_amt",
+                                value=st.session_state[f"{prefix}_amt"],
+                                min_value=0.0, step=1.0)
 
             with c3:
-                st.selectbox("unit", ["g","oz","tsp","tbsp","cup"], key=f"{prefix}_unit")
+                st.selectbox("unit",
+                             ["g","oz","tsp","tbsp","cup"],
+                             key=f"{prefix}_unit",
+                             index=["g","oz","tsp","tbsp","cup"].index(st.session_state[f"{prefix}_unit"])
+                             if st.session_state.get(f"{prefix}_unit") in ["g","oz","tsp","tbsp","cup"] else 0)
 
             with c4:
-                # This is the value we want to fill after lookup
-                st.number_input("cal", value=0, min_value=0, step=1, key=f"{prefix}_cal")
+                st.number_input("cal",
+                                key=f"{prefix}_cal",
+                                value=int(st.session_state[f"{prefix}_cal"]),
+                                min_value=0, step=1)
 
             with c5:
+                st.write("")
+
+            with c6:
                 st.button("Lookup",
                           key=f"lookup_{prefix}",
                           on_click=do_lookup,
                           args=(prefix, FDC_API_KEY))
 
-            # Build the items list (read the current values from session_state)
-            txt = st.session_state.get(f"{prefix}_txt", "")
-            cal_val = st.session_state.get(f"{prefix}_cal", 0)
-            if txt or cal_val:
-                items.append({
-                    "text": txt if txt else f"{st.session_state.get(f'{prefix}_amt',0)}{st.session_state.get(f'{prefix}_unit','g')}",
-                    "cal": int(cal_val) if cal_val else None
-                })
-                if cal_val:
-                    total_calories_calc += int(cal_val)
+            with c7:
+                st.button("Save",
+                          key=f"save_{prefix}",
+                          on_click=save_food_to_db,
+                          args=(sec_name, prefix))
 
+            txt  = st.session_state.get(f"{prefix}_txt", "")
+            calv = st.session_state.get(f"{prefix}_cal", 0)
+            if txt or calv:
+                items.append({
+                    "text": txt if txt else f"{st.session_state.get(f'{prefix}_amt',0)} {st.session_state.get(f'{prefix}_unit','g')}",
+                    "cal": int(calv) if calv else None
+                })
+                if calv:
+                    total_calories_calc += int(calv)
 
         sections_data.append({"name": sec_name, "items": items})
 
     uploaded_photo = st.file_uploader("Upload meal photo", type=["jpg","jpeg","png"])
-    total_override = st.number_input("Total Calories (auto; editable)", value=int(total_calories_calc or 0), step=1)
+    total_override = st.number_input("Total Calories (auto; editable)",
+                                     value=int(total_calories_calc or 0), step=1)
 
     if st.button("Generate Card", type="primary"):
         if not uploaded_photo:
@@ -208,9 +265,12 @@ with form_col:
                 logo_path=logo_path
             )
             out_path = os.path.join(OUTPUT_DIR, f"card_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            render_meal_card(card, photo_path, out_path, theme=theme,
-                             font_scale=font_scale, size=card_size)
+            # >>> The key line: pass BOTH font_scale and card_size so preview == PNG
+            render_meal_card(card, photo_path, out_path,
+                             theme=theme, font_scale=font_scale, size=card_size,
+                             panel_ratio=patio_ratio)
 
+            # store a log entry
             data_json = json.dumps({
                 "program_title": program_title, "class_name": class_name,
                 "meal_title": meal_title, "date_str": date_str,
@@ -226,6 +286,9 @@ with form_col:
                 st.download_button("⬇️ Download Card PNG", f,
                                    file_name=os.path.basename(out_path), mime="image/png")
 
+            # show fresh card immediately
+            st.image(out_path, width="stretch", caption=meal_title)
+
 with preview_col:
     st.subheader("Latest Card")
     df_all = pd.read_sql_query("SELECT * FROM entries ORDER BY date DESC, id DESC", get_conn())
@@ -234,7 +297,7 @@ with preview_col:
     else:
         st.info("Generate your first card to see it here.")
 
-# ------------- Daily Log -------------
+# ---------- Daily Log ----------
 st.subheader("📅 Daily Log & Totals")
 date_filter = st.text_input("Filter by date (e.g., 10/06/25). Leave blank for all.", value="")
 if date_filter.strip():
@@ -247,7 +310,7 @@ if date_filter.strip():
     total_day = int(df_log["total_calories"].sum()) if len(df_log) else 0
     st.metric(f"Total calories on {date_filter}", total_day)
 
-# ------------- Batch Generation -------------
+# ---------- Batch Generation ----------
 st.subheader("🗂️ Batch Card Generation")
 st.caption("Upload CSV with columns: date, meal_title, photo_path, section, item_text, item_cal")
 csv_template = """date,meal_title,photo_path,section,item_text,item_cal
@@ -285,12 +348,12 @@ if batch_file is not None:
                 logo_path=logo_path
             )
             out_path = os.path.join(OUTPUT_DIR, f"card_{title}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            render_meal_card(card, photo_path, out_path, theme=theme,
-                             font_scale=font_scale, size=card_size)
+            render_meal_card(card, photo_path, out_path,
+                             theme=theme, font_scale=font_scale, size=card_size)
             count += 1
         st.success(f"Generated {count} card(s). Check the outputs/ folder or export to PowerPoint below.")
 
-# ------------- PPTX Export -------------
+# ---------- PPTX Export ----------
 st.subheader("📽️ Export Cards to PowerPoint (.pptx)")
 try:
     from pptx import Presentation

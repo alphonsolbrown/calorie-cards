@@ -1,2 +1,5 @@
 __pycache__/\noutputs/\ncalorie_app.db\n.streamlit/secrets.toml\n
 streamlit-deploy.txt
+streamlit-deploy.txt
+.streamlit/secrets.toml
+*.env
