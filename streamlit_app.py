@@ -81,7 +81,7 @@ def load_foods():
 foods_df = load_foods()
 lcol, rcol = st.columns([1,1])
 with lcol:
-    st.dataframe(foods_df, use_container_width=True)
+    st.dataframe(foods_df, width="stretch")
 with rcol:
     st.caption("Filter/search the table, then add picks in the card builder below.")
 
@@ -172,7 +172,7 @@ if date_filter.strip():
     df_log = pd.read_sql_query("SELECT * FROM entries WHERE date = ? ORDER BY id DESC", get_conn(), params=(date_filter,))
 else:
     df_log = pd.read_sql_query("SELECT * FROM entries ORDER BY date DESC, id DESC", get_conn())
-st.dataframe(df_log[["date","meal_title","total_calories"]], use_container_width=True)
+    st.dataframe(df_log[["date","meal_title","total_calories"]], width="stretch")
 if date_filter.strip():
     total_day = int(df_log["total_calories"].sum()) if len(df_log) else 0
     st.metric(f"Total calories on {date_filter}", total_day)
@@ -192,7 +192,7 @@ st.download_button("Download CSV template", csv_template, file_name="batch_templ
 batch_file = st.file_uploader("Upload batch CSV", type=["csv"], key="batchcsv")
 if batch_file is not None:
     dfb = pd.read_csv(batch_file)
-    st.dataframe(dfb.head(), use_container_width=True)
+    st.dataframe(dfb.head(), width="stretch")
     if st.button("Generate All Cards"):
         count = 0
         for (d, title), group in dfb.groupby(["date","meal_title"]):
