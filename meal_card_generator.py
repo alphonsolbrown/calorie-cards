@@ -52,7 +52,8 @@ def render_meal_card(
     card: MealCardData,
     photo_path: str,
     output_path: str = "meal_card.png",
-    size: Tuple[int, int] = (2560, 1600),   # large default canvas (sharp PNG)
+    #size: Tuple[int, int] = (2560, 1600),   # large default canvas (sharp PNG)
+    size: Tuple[int, int] = (1600, 1000),   # trying a smaller canvas for words to be bigger
     theme: Theme = Theme(),
     font_scale: float = 1.85,               # tuned for “nice sized” fonts
     panel_ratio: float = 0.46,
