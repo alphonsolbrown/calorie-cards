@@ -10,6 +10,26 @@ DB_PATH = "calorie_app.db"
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# ---- Safe callback to update calories for a row ----
+def do_lookup(prefix: str, api_key: str):
+    """
+    prefix identifies the row, e.g. 'PROTEIN_1' or 'CARB_3'.
+    Reads txt/amt/unit from session_state and writes the estimate into '<prefix>_cal'.
+    """
+    try:
+        txt  = st.session_state.get(f"{prefix}_txt", "") or ""
+        amt  = st.session_state.get(f"{prefix}_amt", 0.0) or 0.0
+        unit = st.session_state.get(f"{prefix}_unit", "g") or "g"
+        if not api_key or not txt.strip():
+            # nothing to do; leave existing value in place
+            return
+        est = fdc_lookup_kcal(txt, float(amt), unit, api_key)
+        if est is not None:
+            st.session_state[f"{prefix}_cal"] = est  # safe inside a callback
+    except Exception:
+        # don't crash the app if something odd happens
+        pass
+
 def get_conn():
     return sqlite3.connect(DB_PATH)
 
@@ -127,30 +147,40 @@ with form_col:
             total_calories_calc += cal
 
         # 4 manual rows with Lookup button
-        for i in range(1,5):
-            c1, c2, c3, c4 = st.columns([3,1.2,1.2,1.2])
+        for i in range(1, 5):
+            prefix = f"{sec_name}_{i}"
+            c1, c2, c3, c4, c5 = st.columns([3,1.2,1.2,1.2,1.2])
+
             with c1:
-                txt = st.text_input(f"{sec_name} item {i} (manual)", key=f"{sec_name}_txt_{i}")
+                st.text_input(f"{sec_name} item {i} (manual)", key=f"{prefix}_txt")
+
             with c2:
-                amount = st.number_input("amt", value=0.0, min_value=0.0, step=1.0, key=f"{sec_name}_amt_{i}")
+                st.number_input("amt", value=0.0, min_value=0.0, step=1.0, key=f"{prefix}_amt")
+
             with c3:
-                unit = st.selectbox("unit", ["g","oz","tsp","tbsp","cup"], key=f"{sec_name}_unit_{i}")
+                st.selectbox("unit", ["g","oz","tsp","tbsp","cup"], key=f"{prefix}_unit")
+
             with c4:
-                cal_default = st.number_input("cal", value=0, min_value=0, step=1, key=f"{sec_name}_cal_{i}")
+                # This is the value we want to fill after lookup
+                st.number_input("cal", value=0, min_value=0, step=1, key=f"{prefix}_cal")
 
-            if st.button("Lookup", key=f"lookup_{sec_name}_{i}"):
-                est = fdc_lookup_kcal(txt, amount, unit, FDC_API_KEY)
-                if est is None:
-                    st.info("Not found or no API key. Try grams/ounces for better accuracy.")
-                else:
-                    st.session_state[f"{sec_name}_cal_{i}"] = est
-                    st.success(f"Estimated: {est} cal")
+            with c5:
+                st.button("Lookup",
+                          key=f"lookup_{prefix}",
+                          on_click=do_lookup,
+                          args=(prefix, FDC_API_KEY))
 
-            cal_val = st.session_state.get(f"{sec_name}_cal_{i}", cal_default)
+            # Build the items list (read the current values from session_state)
+            txt = st.session_state.get(f"{prefix}_txt", "")
+            cal_val = st.session_state.get(f"{prefix}_cal", 0)
             if txt or cal_val:
-                items.append({"text": txt if txt else f"{amount}{unit}",
-                              "cal": int(cal_val) if cal_val else None})
-                if cal_val: total_calories_calc += int(cal_val)
+                items.append({
+                    "text": txt if txt else f"{st.session_state.get(f'{prefix}_amt',0)}{st.session_state.get(f'{prefix}_unit','g')}",
+                    "cal": int(cal_val) if cal_val else None
+                })
+                if cal_val:
+                    total_calories_calc += int(cal_val)
+
 
         sections_data.append({"name": sec_name, "items": items})
 
