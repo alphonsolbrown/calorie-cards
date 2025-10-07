@@ -69,7 +69,7 @@ def save_food_to_db(category: str, prefix: str, foods_csv_path="foods.csv"):
     if (df["name"] == name).any():
         df.loc[df["name"] == name, "cal"] = cal
     else:
-        df = pd.concat([df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])]],
+        df = pd.concat([df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])],
                        ignore_index=True)
     df.to_csv(foods_csv_path, index=False)
     st.toast(f"Saved: {name} = {cal} cal")
