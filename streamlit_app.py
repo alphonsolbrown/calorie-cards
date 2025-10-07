@@ -40,7 +40,6 @@ with st.sidebar:
     accent_hex = c2.color_picker("Accent", "#6C328C")
     light_hex  = c3.color_picker("Accent Light", "#965AB4")
 
-    # parse HEX to RGB tuple
     def hex_to_rgb(h): return tuple(int(h.lstrip("#")[i:i+2], 16) for i in (0,2,4))
     theme = Theme(
         panel_color=hex_to_rgb(panel_hex),
@@ -84,7 +83,7 @@ lcol, rcol = st.columns([1,1])
 with lcol:
     st.dataframe(foods_df, use_container_width=True)
 with rcol:
-    st.caption("Tip: filter/search within the table, then add picks in the card builder below.")
+    st.caption("Filter/search the table, then add picks in the card builder below.")
 
 # -------- Single Card Builder --------
 st.subheader("🖼️ Build a Single Meal Card")
@@ -103,7 +102,6 @@ with form_col:
         st.markdown(f"**{sec_name}**")
         items = []
 
-        # quick-pick from DB
         options = foods_df[foods_df["category"].str.lower()==sec_name.lower()]["name"].tolist()
         picks = st.multiselect(f"Add {sec_name} from DB", options, key=f"picks_{sec_name}")
         for p in picks:
@@ -111,7 +109,6 @@ with form_col:
             items.append({"text": p, "cal": cal})
             total_calories_calc += cal
 
-        # manual items (up to 4)
         for i in range(1,5):
             c1, c2 = st.columns([3,1])
             with c1:
@@ -147,7 +144,6 @@ with form_col:
             out_path = os.path.join(OUTPUT_DIR, f"card_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
             render_meal_card(card, photo_path, out_path, theme=theme, font_scale=font_scale)
 
-            # store entry
             data_json = json.dumps({
                 "journey_title": journey_title, "meal_title": meal_title, "date_str": date_str,
                 "total_calories": int(total_override or total_calories_calc or 0),
@@ -180,9 +176,6 @@ st.dataframe(df_log[["date","meal_title","total_calories"]], use_container_width
 if date_filter.strip():
     total_day = int(df_log["total_calories"].sum()) if len(df_log) else 0
     st.metric(f"Total calories on {date_filter}", total_day)
-    if daily_target:
-        pct = min(100, round(100 * total_day / daily_target))
-        st.progress(pct/100.0, text=f"{pct}% of {daily_target} kcal target")
 
 # -------- Batch Generation --------
 st.subheader("🗂️ Batch Card Generation")
@@ -237,7 +230,6 @@ except Exception:
     st.warning("`python-pptx` not installed. Add it to requirements.txt to enable PPTX export.")
 
 if ppt_ok:
-    # find all cards in outputs/
     cards = [os.path.join(OUTPUT_DIR, f) for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".png")]
     if not cards:
         st.info("Generate some cards first; they’ll appear here for export.")
@@ -247,8 +239,7 @@ if ppt_ok:
             prs = Presentation()
             blank = prs.slide_layouts[6]
             for p in cards:
-                slide = prs.slides.add_slide(blank)
-                slide.shapes.add_picture(p, Inches(0.5), Inches(0.5), width=Inches(9))
+                prs.slides.add_slide(blank).shapes.add_picture(p, Inches(0.5), Inches(0.5), width=Inches(9))
             ppt_path = os.path.join(OUTPUT_DIR, f"cards_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx")
             prs.save(ppt_path)
             with open(ppt_path, "rb") as f:
