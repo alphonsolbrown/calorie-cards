@@ -161,7 +161,7 @@ st.subheader("🖼️ Build a Single Meal Card")
 form_col, preview_col = st.columns([1,1])
 
 with form_col:
-    program_title = st.text_input("Program Title", value="JOURNEY 3.0")
+    program_title = st.text_input("Program Title", value="40 Day Turn Up (40DTU)")
     class_name    = st.text_input("Class / Group (optional)", value="")
     meal_title    = st.text_input("Meal Title", value="Meal 1")
     date_str      = st.text_input("Date (e.g., 10/06/25)", value=dt.date.today().strftime("%-m/%-d/%y"))
@@ -339,7 +339,7 @@ if batch_file is not None:
                     items.append(MealItem(text=str(row["item_text"]), cal=cal))
                 sections.append(MealSection(name=str(sec), items=items))
             card = MealCardData(
-                program_title="JOURNEY 3.0",
+                program_title="40 Day Turn Up (40DTU)",
                 class_name="",
                 meal_title=str(title),
                 date_str=str(d),
