@@ -230,7 +230,7 @@ def render_meal_card(
     # Count items
     total_items = sum(len(s.items) for s in card.sections)
 
-        if total_items <= items_threshold_for_grid:
+    if total_items <= items_threshold_for_grid:
         # ---------------- Two-panel layout ----------------
         # left = photo, right = text
         left_w  = int(W * (1 - panel_ratio))      # photo width
