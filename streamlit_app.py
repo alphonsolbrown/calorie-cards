@@ -103,10 +103,59 @@ with c2:
             f.write(photo.read())
         st.image(photo_path, caption="Photo", use_container_width=True)
 
+# ---------- USDA lookup ----------
+def usda_lookup(name: str, amt: float, unit: str) -> int:
+    if not FDC_API_KEY or not name:
+        return 0
+    try:
+        s = requests.get(
+            "https://api.nal.usda.gov/fdc/v1/foods/search",
+            params={"api_key": FDC_API_KEY, "query": name, "pageSize": 1}
+        ).json()
+        fdc_id = s["foods"][0]["fdcId"]
+        d = requests.get(
+            f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}",
+            params={"api_key": FDC_API_KEY}
+        ).json()
+
+        kcal_per_100g = None
+        # prefer labelNutrients.energy, fallback to foodNutrients
+        ln = d.get("labelNutrients", {})
+        if "calories" in ln and "value" in ln["calories"]:
+            kcal_per_100g = float(ln["calories"]["value"])
+        else:
+            for n in d.get("foodNutrients", []):
+                nm = str(n.get("nutrient", {}).get("name","")).lower()
+                if "energy" in nm and str(n.get("unitName","kcal")).lower() == "kcal":
+                    kcal_per_100g = float(n.get("value"))
+                    break
+        if kcal_per_100g is None:
+            return 0
+
+        unit = unit.lower()
+        grams = amt
+        if unit in ("g","gram","grams"):
+            grams = amt
+        elif unit in ("oz","ounce","ounces"):
+            grams = amt * 28.3495
+        elif unit in ("tbsp","tablespoon"):
+            grams = amt * 14.2
+        elif unit in ("tsp","teaspoon"):
+            grams = amt * 4.2
+        elif unit in ("cup","cups"):
+            grams = amt * 236.59   # generic fallback
+        elif unit in ("each","item"):
+            grams = amt * 100.0    # rough fallback
+
+        return int(round((grams/100.0) * kcal_per_100g))
+    except Exception:
+        return 0
+
 # ---------- Section inputs ----------
 UNITS = ["g","oz","cup","tbsp","tsp","each"]
 MAX_LINES = 4
 
+# ---------- Manual Rows ----------
 def manual_rows(section_key: str):
     """Return list of (name, amt, unit, cal) for up to MAX_LINES rows in a section."""
     rows = []
@@ -155,54 +204,6 @@ carb_rows = manual_rows("carb")
 st.markdown("### FAT")
 fat_sel = from_db("Fat")
 fat_rows = manual_rows("fat")
-
-# ---------- USDA lookup ----------
-def usda_lookup(name: str, amt: float, unit: str) -> int:
-    if not FDC_API_KEY or not name:
-        return 0
-    try:
-        s = requests.get(
-            "https://api.nal.usda.gov/fdc/v1/foods/search",
-            params={"api_key": FDC_API_KEY, "query": name, "pageSize": 1}
-        ).json()
-        fdc_id = s["foods"][0]["fdcId"]
-        d = requests.get(
-            f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}",
-            params={"api_key": FDC_API_KEY}
-        ).json()
-
-        kcal_per_100g = None
-        # prefer labelNutrients.energy, fallback to foodNutrients
-        ln = d.get("labelNutrients", {})
-        if "calories" in ln and "value" in ln["calories"]:
-            kcal_per_100g = float(ln["calories"]["value"])
-        else:
-            for n in d.get("foodNutrients", []):
-                nm = str(n.get("nutrient", {}).get("name","")).lower()
-                if "energy" in nm and str(n.get("unitName","kcal")).lower() == "kcal":
-                    kcal_per_100g = float(n.get("value"))
-                    break
-        if kcal_per_100g is None:
-            return 0
-
-        unit = unit.lower()
-        grams = amt
-        if unit in ("g","gram","grams"):
-            grams = amt
-        elif unit in ("oz","ounce","ounces"):
-            grams = amt * 28.3495
-        elif unit in ("tbsp","tablespoon"):
-            grams = amt * 14.2
-        elif unit in ("tsp","teaspoon"):
-            grams = amt * 4.2
-        elif unit in ("cup","cups"):
-            grams = amt * 236.59   # generic fallback
-        elif unit in ("each","item"):
-            grams = amt * 100.0    # rough fallback
-
-        return int(round((grams/100.0) * kcal_per_100g))
-    except Exception:
-        return 0
 
 # ---------- Collect items (DB + manual) ----------
 def collect_items(db_names, manual_rows):
