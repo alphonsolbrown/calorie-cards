@@ -8,11 +8,12 @@ from pptx.util import Inches
 
 from meal_card_generator import Theme, MealItem, MealSection, MealCardData, render_meal_card
 from fdc_lookup import fdc_lookup_kcal
+from manual_rows_fix import manual_rows
 
 st.set_page_config(page_title="Calorie Cards — Generator", layout="wide")
 
 # ----------- Secrets / USDA key (never displayed) -----------
-FDC_API_KEY = st.secrets.get("FDC_API_KEY", None) or os.getenv("FDC_API_KEY", None)
+FDC_API_KEY = st.secrets.get("FDC_API_KEY", os.getenv("FDC_API_KEY", "")
 if not FDC_API_KEY:
     with st.expander("USDA Internet Lookup (developer only – set key for local testing)"):
         FDC_API_KEY = st.text_input("FDC API Key", type="password")
@@ -176,15 +177,15 @@ def from_db(category: str):
 st.divider()
 st.markdown("### PROTEIN")
 prot_sel = from_db("Protein")
-prot_rows = manual_rows("protein")
+prot_rows = manual_rows("protein", fdc_api_key=FDC_API_KEY)
 
 st.markdown("### CARB")
 carb_sel = from_db("Carb")
-carb_rows = manual_rows("carb")
+carb_rows = manual_rows("carb", fdc_api_key=FDC_API_KEY)
 
 st.markdown("### FAT")
 fat_sel = from_db("Fat")
-fat_rows = manual_rows("fat")
+fat_rows = manual_rows("fat", fdc_api_key=FDC_API_KEY)
 
 # ---------- Collect items (DB + manual) ----------
 def collect_items(db_names, manual_rows):
