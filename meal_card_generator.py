@@ -230,44 +230,49 @@ def render_meal_card(
     # Count items
     total_items = sum(len(s.items) for s in card.sections)
 
-    if total_items <= items_threshold_for_grid:
+        if total_items <= items_threshold_for_grid:
         # ---------------- Two-panel layout ----------------
-        left_w = int(W * (1 - panel_ratio))          # photo
-        right_w = W - right_x
+        # left = photo, right = text
+        left_w  = int(W * (1 - panel_ratio))      # photo width
+        right_x = left_w                           # right panel x start
+        right_w = W - right_x                      # right panel width
 
-        # First estimate header/footer at the current base scale
-        est_header = int(240 * font_scale) + int(60 * font_scale)   # header text + divider area
-        est_footer = int(86 * font_scale)
+        # draw the photo on the left
+        _draw_photo_to_rect(img, photo_path, (0, 0, left_w, H))
 
-        # Available height for SECTIONS at first pass
+        # --- first pass: estimate header/footer at the base scale ---
+        est_header = int(240 * font_scale) + int(60 * font_scale)  # header text + divider area
+        est_footer = int(86  * font_scale)
+
+        # available height for the sections for first pass
         avail_h = H - est_header - est_footer - pad
 
-        # Fit font to available sections area (first pass)
+        # fit font to available sections area (first pass)
         fitted_scale = _fit_font_scale_for_panels(
             {"right": avail_h},
             {"right": card.sections},
-           right_w - 2*pad,
+            right_w - 2 * pad,
             font_scale
         )
 
-        # Recompute header/footer with fitted scale (more accurate)
+        # --- second pass: recompute header/footer with the fitted scale ---
         header_space = int(240 * fitted_scale) + int(60 * fitted_scale)
-        footer_h     = int(86 * fitted_scale)
+        footer_h     = int(86  * fitted_scale)
 
-        # Available height for SECTIONS after accurate header/footer
+        # final available height for the sections
         avail_h = H - header_space - footer_h - pad
         if avail_h < int(120 * fitted_scale):  # safety
             avail_h = int(120 * fitted_scale)
 
-        # Optional tiny re-fit to be perfect
+        # quick refine to be precise
         fitted_scale = _fit_font_scale_for_panels(
             {"right": avail_h},
             {"right": card.sections},
-            right_w - 2*pad,
+            right_w - 2 * pad,
             fitted_scale
         )
 
-        # Header at top of right
+        # --- draw header ---
         _draw_header_block(
             draw, theme, right_x, 0, right_w, fitted_scale,
             card.program_title, card.class_name,
@@ -275,7 +280,7 @@ def render_meal_card(
             card.total_calories
         )
 
-        # Sections area (under header, above footer)
+        # --- draw sections block (under header) ---
         _draw_sections_block(
             draw, theme,
             right_x, header_space,
@@ -283,18 +288,19 @@ def render_meal_card(
             card.sections, fitted_scale
         )
 
-        # Footer strip
+        # --- footer strip ---
         draw.rectangle([right_x, H - footer_h, W, H], fill=(255, 255, 255))
-        draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(12 * fitted_scale)], fill=theme.accent_light)
+        draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(12 * fitted_scale)],
+                       fill=theme.accent_light)
         if card.footer_text:
             ft_font = _get_font(theme, int(40 * fitted_scale), "italic")
-            txt = card.footer_text
             try:
-                w_ft = draw.textlength(txt, font=ft_font)
+                w_ft = draw.textlength(card.footer_text, font=ft_font)
             except Exception:
                 w_ft = 220
             draw.text((W - pad - w_ft, H - footer_h + int(footer_h * 0.35)),
-                      txt, font=ft_font, fill=theme.accent_light)
+                      card.footer_text, font=ft_font, fill=theme.accent_light)
+
 
     else:
         # ---------------- Four-panel grid ----------------
