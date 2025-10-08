@@ -44,7 +44,7 @@ def do_lookup(prefix: str, api_key: str):
         if api_key and txt.strip():
             est = fdc_lookup_kcal(txt, amt, unit, api_key)
             if est is not None:
-                st.session_state[f"{prefix}_cal"] = int(est)
+                st.session_state[f"{prefix}_cal"] = int(round(est))
     except Exception:
         pass
     finally:
@@ -69,8 +69,10 @@ def save_food_to_db(category: str, prefix: str, foods_csv_path="foods.csv"):
     if (df["name"] == name).any():
         df.loc[df["name"] == name, "cal"] = cal
     else:
-        df = pd.concat([df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])],
-                       ignore_index=True)
+        df = pd.concat(
+            [df, pd.DataFrame([{"category": category.title(), "name": name, "cal": cal}])],
+            ignore_index=True
+        )
     df.to_csv(foods_csv_path, index=False)
     st.toast(f"Saved: {name} = {cal} cal")
     try:
@@ -105,7 +107,11 @@ with st.sidebar:
     font_scale = st.slider("Base font size scale", 1.8, 3.2, 2.4, 0.05)
     size_label = st.selectbox("Card size", ["2560 x 1600 (2.5K)", "1920 x 1200 (HD+)", "1600 x 1000"], index=1)
     card_size = (2560,1600) if size_label.startswith("2560") else (1920,1200) if size_label.startswith("1920") else (1600,1000)
-    panel_ratio = st.slider("Right panel width (two-panel only)", 0.40, 0.55, 0.48, 0.01)
+    panel_ratio = st.slider(
+        "Right panel width (two-panel only)",
+        0.40, 0.60, 0.52, 0.01,
+        help="Higher = more space for the text panel; photo becomes narrower."
+    )
 
     st.header("🔌 USDA Internet Lookup")
     def _read_secret(key: str):
@@ -130,7 +136,7 @@ def load_foods():
             {"category": "Carb",    "name": "Mixed Veggies 1 cup",      "cal": 70},
             {"category": "Carb",    "name": "Cucumber chopped 1 cup",   "cal": 16},
             {"category": "Carb",    "name": "Tomatoes chopped 1/2 cup", "cal": 8},
-            {"category": "Carb",    "name": "Nectarine 1",              "cal": 60},
+            {"category": "Carb",    "name": "Nectarine 1 each",         "cal": 60},
             {"category": "Fat",     "name": "Olive Oil 1 tsp",          "cal": 40},
             {"category": "Fat",     "name": "Butter 1 tsp",             "cal": 33},
         ]).to_csv(path, index=False)
@@ -141,7 +147,7 @@ lcol, rcol = st.columns([1,1])
 with lcol:
     st.dataframe(foods_df, width="stretch")
 with rcol:
-    st.caption("Search/filter, then add picks in the card builder below.")
+    st.caption("Filter, then add picks in the card builder below. Use Lookup for items not in the DB.")
 
 # ---------- Card Builder ----------
 
@@ -152,7 +158,7 @@ with form_col:
     program_title = st.text_input("Program Title", value="40 Day Turn Up")
     class_name    = st.text_input("Class / Group (optional)", value="I RISE")
     meal_title    = st.text_input("Meal Title", value="Meal 1")
-    date_str      = st.text_input("Date (e.g., 10/06/25)", value=dt.date.today().strftime("%-m/%-d/%y"))
+    date_str      = st.text_input("Date (e.g., 10/07/25)", value=dt.date.today().strftime("%-m/%-d/%y"))
     footer_text   = st.text_input("Footer (Brand/Name)", value="Alphonso Brown")
 
     sections_data = []
@@ -169,22 +175,27 @@ with form_col:
             items.append({"text": p, "cal": cal})
             total_calories_calc += cal
 
-        # cleaner single-row layout
+        # single-row layout: name | amt | unit | cal | lookup | save
         for i in range(1, 5):
             prefix = f"{sec_name}_{i}"
             ensure_row_state(prefix)
 
-            # name | amt | unit | cal | lookup | save
-            c1, c2, c3, c4, c5, c6 = st.columns([4.5, 1.0, 1.2, 1.0, 1.2, 1.2])
+            c1, c2, c3, c4, c5, c6 = st.columns([4.6, 1.0, 1.3, 1.0, 1.2, 1.2])
 
             with c1:
-                st.text_input(f"{sec_name} item {i} (manual)", key=f"{prefix}_txt", placeholder="e.g., Grilled Lamb")
+                st.text_input(f"{sec_name} item {i} (manual)", key=f"{prefix}_txt", placeholder="e.g., Medium Orange")
 
             with c2:
                 st.number_input("amt", key=f"{prefix}_amt", min_value=0.0, step=1.0, label_visibility="visible")
 
             with c3:
-                st.selectbox("unit", ["g","oz","tsp","tbsp","cup"], key=f"{prefix}_unit", label_visibility="visible")
+                st.selectbox(
+                    "unit",
+                    ["g","oz","tsp","tbsp","cup","each","half","piece"],
+                    key=f"{prefix}_unit",
+                    label_visibility="visible",
+                    help="Use 'each' or 'half' for whole fruit/veg (USDA portion-based)."
+                )
 
             with c4:
                 st.number_input("cal", key=f"{prefix}_cal", min_value=0, step=1, label_visibility="visible")
@@ -254,6 +265,7 @@ with form_col:
                 st.download_button("⬇️ Download Card PNG", f,
                     file_name=os.path.basename(out_path), mime="image/png")
 
+            # one preview only (no middle template)
             st.image(out_path, width="stretch", caption=meal_title)
 
 with preview_col:
@@ -267,7 +279,7 @@ with preview_col:
 # ---------- Daily Log ----------
 
 st.subheader("📅 Daily Log & Totals")
-date_filter = st.text_input("Filter by date (e.g., 10/06/25). Leave blank for all.", value="")
+date_filter = st.text_input("Filter by date (e.g., 10/07/25). Leave blank for all.", value="")
 if date_filter.strip():
     df_log = pd.read_sql_query("SELECT * FROM entries WHERE date = ? ORDER BY id DESC",
                                get_conn(), params=(date_filter,))

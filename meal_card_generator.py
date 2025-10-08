@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
-import os, textwrap, math
+import os, textwrap
 
 # --------------------------- Font + Theme helpers ---------------------------
 
@@ -145,7 +145,6 @@ def _fit_font_scale_for_panels(panel_heights: Dict[str,int],
             if need > h:
                 ok = False
                 ratio = h / max(1, need)
-                # move 70% toward the target each step (faster than tiny decrements)
                 scale = max(1.2, scale * (0.7 + 0.3 * ratio))
         if ok:
             break
@@ -159,7 +158,6 @@ def _draw_sections_block(draw: ImageDraw.ImageDraw, theme: Theme, x: int, y: int
     Render a vertical block of sections into a rectangle (x,y,w,h).
     Assumes fscale already fitted for the panel.
     """
-    # backgrounds
     draw.rectangle([x, y, x+w, y+h], fill=theme.panel_color)
 
     section_title_font = _get_font(theme, int(52 * fscale), "bold")
@@ -232,22 +230,18 @@ def render_meal_card(
 
     if total_items <= items_threshold_for_grid:
         # ---------------- Two-panel layout ----------------
-        # left = photo, right = text
-        left_w  = int(W * (1 - panel_ratio))      # photo width
-        right_x = left_w                           # right panel x start
-        right_w = W - right_x                      # right panel width
+        left_w  = int(W * (1 - panel_ratio))      # photo width (photo smaller by default)
+        right_x = left_w
+        right_w = W - right_x
 
-        # draw the photo on the left
         _draw_photo_to_rect(img, photo_path, (0, 0, left_w, H))
 
-        # --- first pass: estimate header/footer at the base scale ---
-        est_header = int(240 * font_scale) + int(60 * font_scale)  # header text + divider area
+        # first pass: estimate header/footer at base scale
+        est_header = int(240 * font_scale) + int(60 * font_scale)
         est_footer = int(86  * font_scale)
-
-        # available height for the sections for first pass
         avail_h = H - est_header - est_footer - pad
 
-        # fit font to available sections area (first pass)
+        # fit font to available sections (first pass)
         fitted_scale = _fit_font_scale_for_panels(
             {"right": avail_h},
             {"right": card.sections},
@@ -255,16 +249,14 @@ def render_meal_card(
             font_scale
         )
 
-        # --- second pass: recompute header/footer with the fitted scale ---
+        # recompute with fitted scale
         header_space = int(240 * fitted_scale) + int(60 * fitted_scale)
         footer_h     = int(86  * fitted_scale)
-
-        # final available height for the sections
         avail_h = H - header_space - footer_h - pad
-        if avail_h < int(120 * fitted_scale):  # safety
+        if avail_h < int(120 * fitted_scale):
             avail_h = int(120 * fitted_scale)
 
-        # quick refine to be precise
+        # refine
         fitted_scale = _fit_font_scale_for_panels(
             {"right": avail_h},
             {"right": card.sections},
@@ -272,7 +264,7 @@ def render_meal_card(
             fitted_scale
         )
 
-        # --- draw header ---
+        # header
         _draw_header_block(
             draw, theme, right_x, 0, right_w, fitted_scale,
             card.program_title, card.class_name,
@@ -280,15 +272,11 @@ def render_meal_card(
             card.total_calories
         )
 
-        # --- draw sections block (under header) ---
-        _draw_sections_block(
-            draw, theme,
-            right_x, header_space,
-            right_w, avail_h,
-            card.sections, fitted_scale
-        )
+        # sections
+        _draw_sections_block(draw, theme, right_x, header_space, right_w, avail_h,
+                             card.sections, fitted_scale)
 
-        # --- footer strip ---
+        # footer stripe (brand line)
         draw.rectangle([right_x, H - footer_h, W, H], fill=(255, 255, 255))
         draw.rectangle([right_x, H - footer_h, W, H - footer_h + int(12 * fitted_scale)],
                        fill=theme.accent_light)
@@ -301,19 +289,16 @@ def render_meal_card(
             draw.text((W - pad - w_ft, H - footer_h + int(footer_h * 0.35)),
                       card.footer_text, font=ft_font, fill=theme.accent_light)
 
-
     else:
-        # ---------------- Four-panel grid ----------------
-        # grid with a small gutter
+        # ---------------- Four-panel grid (photo TL; header+protein BL; carb TR; fat BR) ----------------
         gutter = int(24 * (W / 2560))
         col_w = (W - 3*gutter) // 2
         row_h = (H - 3*gutter) // 2
 
-        # assign sections to panels
-        secs_map = {s.name.strip().upper(): s for s in card.sections}
-        sec_prot = secs_map.get("PROTEIN", MealSection("PROTEIN", []))
-        sec_carb = secs_map.get("CARB", MealSection("CARB", []))
-        sec_fat  = secs_map.get("FAT",  MealSection("FAT",  []))
+        secs = {s.name.strip().upper(): s for s in card.sections}
+        sec_prot = secs.get("PROTEIN", MealSection("PROTEIN", []))
+        sec_carb = secs.get("CARB",    MealSection("CARB",    []))
+        sec_fat  = secs.get("FAT",     MealSection("FAT",     []))
 
         # Photo: top-left
         x0 = gutter;          y0 = gutter
@@ -326,12 +311,12 @@ def render_meal_card(
                            card.program_title, card.class_name,
                            f"{card.meal_title} - {card.date_str}",
                            card.total_calories)
-        # Keep some space under header
         header_h = int(240 * font_scale) + int(50 * font_scale)
         sec_area_h = row_h - header_h
-        # Fit for protein block only
+
         fitted_bl = _fit_font_scale_for_panels(
-            {"bl": sec_area_h}, {"bl": [sec_prot]}, col_w - 2*int(30*font_scale), font_scale
+            {"bl": sec_area_h}, {"bl": [sec_prot]},
+            col_w - 2*int(30*font_scale), font_scale
         )
         _draw_sections_block(draw, theme, bl_x, bl_y + header_h, col_w, sec_area_h,
                              [sec_prot], fitted_bl)
@@ -339,18 +324,20 @@ def render_meal_card(
         # Top-right: carbs
         tr_x = 2*gutter + col_w; tr_y = gutter
         fitted_tr = _fit_font_scale_for_panels(
-            {"tr": row_h - 2*int(30*font_scale)}, {"tr": [sec_carb]}, col_w - 2*int(30*font_scale), font_scale
+            {"tr": row_h - 2*int(30*font_scale)}, {"tr": [sec_carb]},
+            col_w - 2*int(30*font_scale), font_scale
         )
         _draw_sections_block(draw, theme, tr_x, tr_y, col_w, row_h, [sec_carb], fitted_tr)
 
         # Bottom-right: fats
         br_x = 2*gutter + col_w; br_y = 2*gutter + row_h
         fitted_br = _fit_font_scale_for_panels(
-            {"br": row_h - 2*int(30*font_scale)}, {"br": [sec_fat]}, col_w - 2*int(30*font_scale), font_scale
+            {"br": row_h - 2*int(30*font_scale)}, {"br": [sec_fat]},
+            col_w - 2*int(30*font_scale), font_scale
         )
         _draw_sections_block(draw, theme, br_x, br_y, col_w, row_h, [sec_fat], fitted_br)
 
-    # Optional logo
+    # Optional logo (top right)
     if card.logo_path and os.path.exists(card.logo_path):
         try:
             logo = Image.open(card.logo_path).convert("RGBA")
