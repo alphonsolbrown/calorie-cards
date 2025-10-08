@@ -13,7 +13,7 @@ from manual_rows_fix import manual_rows
 st.set_page_config(page_title="Calorie Cards — Generator", layout="wide")
 
 # ----------- Secrets / USDA key (never displayed) -----------
-FDC_API_KEY = st.secrets.get("FDC_API_KEY", os.getenv("FDC_API_KEY", "")
+FDC_API_KEY = st.secrets.get("FDC_API_KEY", os.getenv("FDC_API_KEY", ""))
 if not FDC_API_KEY:
     with st.expander("USDA Internet Lookup (developer only – set key for local testing)"):
         FDC_API_KEY = st.text_input("FDC API Key", type="password")
