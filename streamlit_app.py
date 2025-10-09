@@ -1,214 +1,241 @@
-import streamlit as st
+# streamlit_app.py
+from __future__ import annotations
+import os, io, datetime as dt, requests
 import pandas as pd
-import sqlite3, os, json, datetime as dt, io
-from PIL import Image
-from meal_card_generator import MealCardData, MealSection, MealItem, render_meal_card, Theme
+import streamlit as st
+from pptx import Presentation
+from pptx.util import Inches
 
-DB_PATH = "calorie_app.db"
-OUTPUT_DIR = "outputs"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+from meal_card_generator import Theme, MealItem, MealSection, MealCardData, render_meal_card
+from fdc_lookup import fdc_lookup_kcal
+from manual_rows_fix import manual_rows
 
-def get_conn():
-    return sqlite3.connect(DB_PATH)
+st.set_page_config(page_title="Calorie Cards — Generator", layout="wide")
 
-def init_db():
-    with get_conn() as con:
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            meal_title TEXT NOT NULL,
-            total_calories INTEGER NOT NULL,
-            data_json TEXT NOT NULL,
-            image_path TEXT
-        )
-        """)
-init_db()
+# ----------- Secrets / USDA key (never displayed) -----------
+FDC_API_KEY = st.secrets.get("FDC_API_KEY", os.getenv("FDC_API_KEY", "")
+if not FDC_API_KEY:
+    with st.expander("USDA Internet Lookup (developer only – set key for local testing)"):
+        FDC_API_KEY = st.text_input("FDC API Key", type="password")
 
-st.set_page_config(page_title="Calorie Cards", layout="wide")
-st.title("🍽️ Calorie Cards — Tracker + Card Generator")
-
+# ---------------- Sidebar: compact theme + size ----------------
 with st.sidebar:
-    st.header("🎨 Brand / Theme")
-    c1, c2, c3 = st.columns(3)
-    panel = c1.color_picker("Panel", "#FFFFFF")
-    accent = c2.color_picker("Accent", "#6C328C")
-    accent2 = c3.color_picker("Accent Light", "#965AB4")
-    logo_file = st.file_uploader("Upload logo (PNG)", type=["png"], key="logo")
-    font_scale = st.slider("🅰️ Font size scale", 0.8, 2.0, 1.3, 0.05)
-    logo_path = None
-    if logo_file:
-        logo_path = os.path.join(OUTPUT_DIR, "brand_logo.png")
-        Image.open(logo_file).save(logo_path)
+    st.header("Brand / Theme")
+    c1, c2 = st.columns(2)
+    c3, c4 = st.columns(2)
+    panel_hex  = c1.color_picker("Panel", "#F4F4F4")
+    accent_hex = c2.color_picker("Accent", "#672B91")
+    text_hex   = c3.color_picker("Text", "#141414")
+    faint_hex  = c4.color_picker("Muted", "#787878")
 
+    to_rgb = lambda hx: tuple(int(hx[i:i+2], 16) for i in (1,3,5))
     theme = Theme(
-        panel_color=tuple(int(panel.lstrip("#")[i:i+2], 16) for i in (0,2,4)),
-        accent=tuple(int(accent.lstrip("#")[i:i+2], 16) for i in (0,2,4)),
-        accent_light=tuple(int(accent2.lstrip("#")[i:i+2], 16) for i in (0,2,4)),
+        panel_color=to_rgb(panel_hex),
+        accent=to_rgb(accent_hex),
+        text=to_rgb(text_hex),
+        faint=to_rgb(faint_hex),
     )
 
-    st.header("🎯 Daily Target")
-    daily_target = st.number_input("Calories/day", value=2000, step=50)
+    st.header("Typography & Size")
+    base_scale = st.slider("Base font size scale", 0.8, 2.2, 1.20, 0.01)
+    card_size = st.selectbox(
+        "Card size",
+        options=[(1920,1200), (2560,1600), (2880,1800), (3840,2400)],
+        index=0, format_func=lambda s: f"{s[0]} x {s[1]}"
+    )
+    right_ratio = st.slider("Right panel width (two-panel only)", 0.42, 0.72, 0.52, 0.01)
 
-st.subheader("📚 Food Database (click to add)")
-@st.cache_data
-def load_foods():
-    path = "foods.csv"
-    if not os.path.exists(path):
-        pd.DataFrame([
-            {"category":"Protein","name":"Baked Cod 4 oz","cal":138},
+# ---------------- Food DB (in-session; you can swap to sqlite) ----------------
+if "foods" not in st.session_state:
+    st.session_state["foods"] = pd.DataFrame(
+        [
             {"category":"Protein","name":"Grilled Chicken 4 oz","cal":170},
-            {"category":"Protein","name":"Salmon 4 oz","cal":233},
             {"category":"Carb","name":"Mixed Veggies 1 cup","cal":70},
-            {"category":"Carb","name":"Cucumber chopped 1 cup","cal":16},
-            {"category":"Carb","name":"Tomatoes chopped 1/2 cup","cal":8},
-            {"category":"Carb","name":"Nectarine 1","cal":60},
             {"category":"Fat","name":"Olive Oil 1 tsp","cal":40},
-            {"category":"Fat","name":"Butter 1 tsp","cal":33},
-        ]).to_csv(path, index=False)
-    return pd.read_csv(path)
+        ]
+    )
+foods_df = st.session_state["foods"]
 
-foods_df = load_foods()
-left, right = st.columns([1,1])
+# --------------- Top: left DB / right last card ----------------
+left, right = st.columns([1,1], gap="large")
+
 with left:
-    st.dataframe(foods_df)
+    st.subheader("📚 Food Database (add items here)")
+    st.dataframe(foods_df, use_container_width=True, height=320)
+
+    with st.form("new_food"):
+        c1, c2, c3 = st.columns([1,2,1])
+        cat = c1.selectbox("Category", ["Protein","Carb","Fat"])
+        nm  = c2.text_input("Name")
+        cal = c3.number_input("Calories", min_value=0, step=1, value=0)
+        if st.form_submit_button("Add"):
+            if nm:
+                st.session_state["foods"] = pd.concat(
+                    [st.session_state["foods"], pd.DataFrame([{"category":cat,"name":nm,"cal":int(cal)}])],
+                    ignore_index=True
+                )
+                st.rerun()
+
+    # DB CSV download
+    csv = foods_df.to_csv(index=False).encode()
+    st.download_button("Download DB CSV", data=csv, file_name="foods.csv", mime="text/csv")
+
 with right:
-    st.caption("Tip: use the DB to add items to your card quickly.")
+    st.subheader("🧾 Last Generated Card")
+    if os.path.exists("meal_card.png"):
+        st.image("meal_card.png")
+    else:
+        st.info("No card generated yet")
 
-st.subheader("🖼️ Build a Single Meal Card")
-col_form, col_preview = st.columns([1,1])
+# ---------------- Build a Single Meal Card (full width) ----------------
+st.markdown("## 🍽️ Build a Single Meal Card (full width)")
+c1, c2 = st.columns([1,1])
+with c1:
+    program    = st.text_input("Program Title", "40 Day Turn Up")
+    grp        = st.text_input("Class / Group (optional)", "I RISE")
+    meal_title = st.text_input("Meal Title", "Meal 1")
+    date_str   = st.date_input("Date", value=dt.date.today()).strftime("%-m/%-d/%y")
+    brand      = st.text_input("Brand (tiny footer)", "Alphonso Brown")
+with c2:
+    photo = st.file_uploader("Upload meal photo", type=["png","jpg","jpeg"])
+    photo_path = None
+    if photo:
+        photo_path = "preview_photo.png"
+        with open(photo_path, "wb") as f:
+            f.write(photo.read())
+        st.image(photo_path, caption="Photo", use_container_width=True)
 
-with col_form:
-    journey_title = st.text_input("Journey Title", value="JOURNEY 3.0")
-    meal_title = st.text_input("Meal Title", value="Meal 1")
-    date_str = st.text_input("Date", value=dt.date.today().strftime("%-m/%-d/%y"))
-    footer_text = st.text_input("Footer (Brand/Name)", value="")
-    sections_data = []
-    total_calories_calc = 0
+# ---------- USDA lookup ----------
+def usda_lookup(name: str, amt: float, unit: str) -> int:
+    kcal = fdc_lookup_kcal(name, amt, unit, api_key=FDC_API_KEY or "")
+    return int(round(kcal or 0))
 
-    for sec_name in ["PROTEIN","CARB","FAT"]:
-        st.markdown(f"**{sec_name}**")
-        items = []
-        pick = st.multiselect(f"Add {sec_name} from DB",
-            foods_df[foods_df["category"].str.lower()==sec_name.lower()]["name"].tolist(),
-            key=f"pick_{sec_name}")
-        for p in pick:
-            cal = int(foods_df.loc[foods_df["name"]==p,"cal"].iloc[0])
-            items.append({"text": p, "cal": cal}); total_calories_calc += cal
-        for i in range(1,5):
-            c1,c2 = st.columns([3,1])
-            with c1:
-                text = st.text_input(f"{sec_name} item {i} (manual)", value="", key=f"{sec_name}_text_{i}")
-            with c2:
-                cal = st.number_input("cal", value=0, min_value=0, step=1, key=f"{sec_name}_cal_{i}")
-            if text or cal:
-                items.append({"text": text, "cal": int(cal) if cal else None})
-                if cal: total_calories_calc += int(cal)
-        sections_data.append({"name": sec_name, "items": items})
+# ---------- Section inputs ----------
+UNITS = ["g","oz","cup","tbsp","tsp","each"]
+MAX_LINES = 4
 
-    uploaded_img = st.file_uploader("Upload meal photo", type=["jpg","jpeg","png"], key="single_photo")
-    total_override = st.number_input("Total Calories (auto; editable)", value=total_calories_calc or 0, step=1)
+# put this near the top of the file (or above manual_rows):
+def _do_lookup(cal_key: str, name: str, amt: float, unit: str, api_key: str):
+    if name and api_key:
+        # use your existing usda_lookup; returns int calories
+        st.session_state[cal_key] = usda_lookup(name, amt, unit)
 
-    if st.button("Generate Card", type="primary"):
-        if not uploaded_img:
-            st.warning("Please upload a photo.")
-        else:
-            img = Image.open(uploaded_img).convert("RGB")
-            img_path = os.path.join(OUTPUT_DIR, f"photo_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
-            img.save(img_path, "JPEG", quality=92)
-            card = MealCardData(
-                journey_title=journey_title,
-                meal_title=meal_title,
-                date_str=date_str,
-                total_calories=int(total_override or total_calories_calc or 0),
-                sections=[MealSection(name=s["name"], items=[MealItem(text=i["text"], cal=i.get("cal")) for i in s["items"]]) for s in sections_data],
-                footer_text=footer_text,
-                logo_path=logo_path
+def manual_rows(section_key: str):
+    """Return list of (name, amt, unit, cal) for up to MAX_LINES rows in a section."""
+    rows = []
+    for i in range(1, MAX_LINES+1):
+        k = f"{section_key}{i}"
+        name_key = f"{k}_name"
+        amt_key  = f"{k}_amt"
+        unit_key = f"{k}_unit"
+        cal_key  = f"{k}_cal"
+        lk_key   = f"{k}_lk"
+        sv_key   = f"{k}_sv"
+
+        # 1) ensure cal key exists *before* building the widget
+        if cal_key not in st.session_state:
+            st.session_state[cal_key] = 0
+
+        cA, cB, cC, cD, cE = st.columns([2.3, 0.9, 1.0, 1.0, 0.8])
+
+        # 2) build widgets
+        name = cA.text_input(f"item {i}", key=name_key)
+        amt  = cB.number_input("amt",  key=amt_key,  value=0.0, step=0.25)
+        unit = cC.selectbox("unit",    UNITS,        key=unit_key)
+
+        # bind the number_input to session state key; don't overwrite it directly later
+        cal  = cD.number_input("cal",  key=cal_key,  value=st.session_state[cal_key], step=1)
+
+        # 3) button runs a callback that sets session_state and triggers rerun automatically
+        cE.button(
+            "Lookup", key=lk_key,
+            on_click=_do_lookup,
+            kwargs=dict(cal_key=cal_key, name=name, amt=amt, unit=unit, api_key=FDC_API_KEY),
+        )
+
+        # 4) explicit Save (unchanged)
+        sv = st.button("Save", key=sv_key)
+        if sv and name and st.session_state.get(cal_key, cal) > 0:
+            pretty = f"{name} {amt:g} {unit}"
+            kcal   = int(st.session_state.get(cal_key, cal))
+            st.session_state["foods"] = pd.concat(
+                [st.session_state["foods"], pd.DataFrame([{
+                    "category": section_key.capitalize(),
+                    "name": pretty, "cal": kcal
+                }])],
+                ignore_index=True,
             )
-            out_path = os.path.join(OUTPUT_DIR, f"card_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            render_meal_card(card, img_path, out_path, theme=theme, font_scale=font_scale)
+            st.toast(f"Saved: {pretty} — {kcal} cal")
 
-            data_json = json.dumps({
-                "journey_title": journey_title,
-                "meal_title": meal_title,
-                "date_str": date_str,
-                "total_calories": int(total_override or total_calories_calc or 0),
-                "footer_text": footer_text,
-                "sections": sections_data
-            })
-            with get_conn() as con:
-                con.execute("INSERT INTO entries(date, meal_title, total_calories, data_json, image_path) VALUES (?, ?, ?, ?, ?)",
-                            (date_str, meal_title, int(total_override or total_calories_calc or 0), data_json, out_path))
+        rows.append((name, amt, unit, int(st.session_state.get(cal_key, 0))))
+    return rows
 
-            st.success(f"Saved card: {out_path}")
-            with open(out_path, "rb") as f:
-                st.download_button("⬇️ Download Card PNG", f, file_name=os.path.basename(out_path), mime="image/png")
+def from_db(category: str):
+    return st.multiselect(f"Add {category.upper()} from DB",
+        options=foods_df.query("category == @category")["name"].tolist())
 
-with col_preview:
-    st.subheader("Latest Card")
-    df_all = pd.read_sql_query("SELECT * FROM entries ORDER BY date DESC, id DESC", get_conn())
-    if len(df_all) > 0 and os.path.exists(df_all.iloc[0]["image_path"]):
-        st.image(df_all.iloc[0]["image_path"], use_column_width=True, caption=df_all.iloc[0]["meal_title"])
-    else:
-        st.info("Generate your first card to see it here.")
+st.divider()
+st.markdown("### PROTEIN")
+prot_sel = from_db("Protein")
+prot_rows = manual_rows("protein", fdc_api_key=FDC_API_KEY)
 
-st.subheader("🗂️ Batch Card Generation")
-st.caption("Upload a CSV with columns: date, meal_title, photo_path, section, item_text, item_cal.")
-sample = """date,meal_title,photo_path,section,item_text,item_cal
-7/3/24,Meal 4,photos/cod.jpg,PROTEIN,4 oz Baked Cod,138
-7/3/24,Meal 4,photos/cod.jpg,CARB,1 Cup Raw Mixed Veggies,70
-7/3/24,Meal 4,photos/cod.jpg,CARB,1 Cup Chopped Cucumber,16
-7/3/24,Meal 4,photos/cod.jpg,CARB,1/2 Cup Chopped Tomatoes,8
-7/3/24,Meal 4,photos/cod.jpg,FAT,1 teaspoon Olive Oil,40
-"""
-st.download_button("Download CSV template", sample, file_name="batch_template.csv", mime="text/csv")
+st.markdown("### CARB")
+carb_sel = from_db("Carb")
+carb_rows = manual_rows("carb", fdc_api_key=FDC_API_KEY)
 
-batch_file = st.file_uploader("Upload batch CSV", type=["csv"], key="batchcsv")
-if batch_file is not None:
-    dfb = pd.read_csv(batch_file)
-    st.dataframe(dfb.head())
-    if st.button("Generate All Cards"):
-        for (date_str, meal_title), sdf in dfb.groupby(["date","meal_title"]):
-            photo_path = sdf["photo_path"].iloc[0]
-            sections = []
-            total = 0
-            for sec_name, sub in sdf.groupby("section"):
-                items = []
-                for _, row in sub.iterrows():
-                    cal = int(row["item_cal"]) if not pd.isna(row["item_cal"]) else None
-                    if cal: total += cal
-                    items.append(MealItem(text=row["item_text"], cal=cal))
-                sections.append(MealSection(name=sec_name, items=items))
-            card = MealCardData(journey_title="JOURNEY 3.0", meal_title=meal_title, date_str=date_str, total_calories=total, sections=sections, logo_path=logo_path)
-            out_path = os.path.join(OUTPUT_DIR, f"card_{meal_title}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
-            render_meal_card(card, photo_path, out_path, theme=theme, font_scale=font_scale)
-        st.success("Batch generated. Check the outputs/ folder below.")
+st.markdown("### FAT")
+fat_sel = from_db("Fat")
+fat_rows = manual_rows("fat", fdc_api_key=FDC_API_KEY)
 
-st.subheader("📽️ Export Cards to PowerPoint (.pptx)")
-try:
-    from pptx import Presentation
-    from pptx.util import Inches
-    ppt_ok = True
-except Exception:
-    ppt_ok = False
-    st.warning("python-pptx not installed. Add it to requirements.txt to enable PPTX export.")
+# ---------- Collect items (DB + manual) ----------
+def collect_items(db_names, manual_rows):
+    items = []
+    for nm in db_names:
+        row = foods_df.query("name == @nm").iloc[0]
+        items.append(MealItem(text=row["name"], cal=int(row["cal"])))
+    for (name, amt, unit, cal) in manual_rows:
+        if name and cal > 0:
+            items.append(MealItem(text=f"{name} {amt:g} {unit}", cal=int(cal)))
+    return items
 
-if ppt_ok:
-    existing = [os.path.join(OUTPUT_DIR, f) for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".png")]
-    if len(existing) == 0:
-        st.info("Generate some cards first. They will appear here for export.")
-    else:
-        st.write(f"Found {len(existing)} card(s) in outputs/.")
-        if st.button("Create PowerPoint from all cards"):
-            prs = Presentation()
-            blank = prs.slide_layouts[6]
-            for img_path in existing:
-                slide = prs.slides.add_slide(blank)
-                slide.shapes.add_picture(img_path, Inches(0.5), Inches(0.5), width=Inches(9))
-            ppt_path = os.path.join(OUTPUT_DIR, f"cards_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx")
-            prs.save(ppt_path)
-            with open(ppt_path, "rb") as f:
-                st.download_button("⬇️ Download PPTX", f, file_name=os.path.basename(ppt_path), mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+prot_items = collect_items(prot_sel, prot_rows)
+carb_items = collect_items(carb_sel, carb_rows)
+fat_items  = collect_items(fat_sel,  fat_rows)
 
-st.markdown("---")
-st.caption("Calorie Cards • Built with Streamlit")
+# ---------- Render ----------
+st.divider()
+total_cals = int(sum(i.cal for i in prot_items+carb_items+fat_items))
+st.metric("Total Calories (auto; updates when you Lookup/Save)", total_cals)
+
+if st.button("Generate Card", type="primary", use_container_width=True):
+    card = MealCardData(
+        program_title=program.strip() or "Program",
+        class_name=(grp.strip() or None),
+        meal_title=meal_title.strip() or "Meal 1",
+        date_str=date_str,
+        brand=brand.strip() or None,
+        protein=MealSection("Protein", prot_items),
+        carb=MealSection("Carb", carb_items),
+        fat=MealSection("Fat", fat_items),
+    )
+    out = "meal_card.png"
+    render_meal_card(card, photo_path=photo_path, output_path=out,
+                     size=card_size, theme=theme, font_scale=base_scale, panel_ratio=right_ratio)
+    st.success("Card generated.")
+    st.image(out, use_container_width=True)
+
+    # download PNG
+    with open(out, "rb") as f:
+        st.download_button("Download PNG", data=f.read(), file_name="meal_card.png", mime="image/png")
+
+    # download PPTX with the card as one slide
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    pic = os.path.abspath(out)
+    left = top = Inches(0.25)
+    slide.shapes.add_picture(pic, left, top, width=Inches(9.5))
+    bio = io.BytesIO()
+    prs.save(bio); bio.seek(0)
+    st.download_button("Download PPTX", data=bio, file_name="meal_card.pptx",
+                       mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
