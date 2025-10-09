@@ -7,11 +7,13 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from meal_card_generator import Theme, MealItem, MealSection, MealCardData, render_meal_card
+from fdc_lookup import fdc_lookup_kcal
+from manual_rows_fix import manual_rows
 
 st.set_page_config(page_title="Calorie Cards — Generator", layout="wide")
 
 # ----------- Secrets / USDA key (never displayed) -----------
-FDC_API_KEY = st.secrets.get("FDC_API_KEY", None) or os.getenv("FDC_API_KEY", None)
+FDC_API_KEY = st.secrets.get("FDC_API_KEY", os.getenv("FDC_API_KEY", ""))
 if not FDC_API_KEY:
     with st.expander("USDA Internet Lookup (developer only – set key for local testing)"):
         FDC_API_KEY = st.text_input("FDC API Key", type="password")
@@ -103,40 +105,69 @@ with c2:
             f.write(photo.read())
         st.image(photo_path, caption="Photo", use_container_width=True)
 
+# ---------- USDA lookup ----------
+def usda_lookup(name: str, amt: float, unit: str) -> int:
+    kcal = fdc_lookup_kcal(name, amt, unit, api_key=FDC_API_KEY or "")
+    return int(round(kcal or 0))
+
 # ---------- Section inputs ----------
 UNITS = ["g","oz","cup","tbsp","tsp","each"]
 MAX_LINES = 4
+
+# put this near the top of the file (or above manual_rows):
+def _do_lookup(cal_key: str, name: str, amt: float, unit: str, api_key: str):
+    if name and api_key:
+        # use your existing usda_lookup; returns int calories
+        st.session_state[cal_key] = usda_lookup(name, amt, unit)
 
 def manual_rows(section_key: str):
     """Return list of (name, amt, unit, cal) for up to MAX_LINES rows in a section."""
     rows = []
     for i in range(1, MAX_LINES+1):
         k = f"{section_key}{i}"
+        name_key = f"{k}_name"
+        amt_key  = f"{k}_amt"
+        unit_key = f"{k}_unit"
+        cal_key  = f"{k}_cal"
+        lk_key   = f"{k}_lk"
+        sv_key   = f"{k}_sv"
+
+        # 1) ensure cal key exists *before* building the widget
+        if cal_key not in st.session_state:
+            st.session_state[cal_key] = 0
+
         cA, cB, cC, cD, cE = st.columns([2.3, 0.9, 1.0, 1.0, 0.8])
-        name = cA.text_input(f"item {i}", key=f"{k}_name")
-        amt  = cB.number_input("amt",  key=f"{k}_amt", value=0.0, step=0.25)
-        unit = cC.selectbox("unit", UNITS, key=f"{k}_unit")
-        cal  = cD.number_input("cal",  key=f"{k}_cal", value=0, step=1)
-        lk   = cE.button("Lookup", key=f"{k}_lk")
 
-        # do lookup -> write to session_state cal, then rerun so the box updates
-        if lk and name and FDC_API_KEY:
-            st.session_state[f"{k}_cal"] = usda_lookup(name, amt, unit)
-            st.rerun()
+        # 2) build widgets
+        name = cA.text_input(f"item {i}", key=name_key)
+        amt  = cB.number_input("amt",  key=amt_key,  value=0.0, step=0.25)
+        unit = cC.selectbox("unit",    UNITS,        key=unit_key)
 
-        sv = st.button("Save", key=f"{k}_sv")
-        if sv and name and st.session_state.get(f"{k}_cal", cal) > 0:
+        # bind the number_input to session state key; don't overwrite it directly later
+        cal  = cD.number_input("cal",  key=cal_key,  value=st.session_state[cal_key], step=1)
+
+        # 3) button runs a callback that sets session_state and triggers rerun automatically
+        cE.button(
+            "Lookup", key=lk_key,
+            on_click=_do_lookup,
+            kwargs=dict(cal_key=cal_key, name=name, amt=amt, unit=unit, api_key=FDC_API_KEY),
+        )
+
+        # 4) explicit Save (unchanged)
+        sv = st.button("Save", key=sv_key)
+        if sv and name and st.session_state.get(cal_key, cal) > 0:
             pretty = f"{name} {amt:g} {unit}"
-            kcal   = int(st.session_state.get(f"{k}_cal", cal))
+            kcal   = int(st.session_state.get(cal_key, cal))
             st.session_state["foods"] = pd.concat(
                 [st.session_state["foods"], pd.DataFrame([{
-                    "category": section_key[0].upper()+section_key[1:],  # "Protein"/"Carb"/"Fat"
+                    "category": section_key.capitalize(),
                     "name": pretty, "cal": kcal
-                }])], ignore_index=True
+                }])],
+                ignore_index=True,
             )
             st.toast(f"Saved: {pretty} — {kcal} cal")
 
-        rows.append((name, amt, unit, int(st.session_state.get(f"{k}_cal", cal))))
+        rows.append((name, amt, unit, int(st.session_state.get(cal_key, 0))))
     return rows
 
 def from_db(category: str):
@@ -146,63 +177,15 @@ def from_db(category: str):
 st.divider()
 st.markdown("### PROTEIN")
 prot_sel = from_db("Protein")
-prot_rows = manual_rows("protein")
+prot_rows = manual_rows("protein", fdc_api_key=FDC_API_KEY)
 
 st.markdown("### CARB")
 carb_sel = from_db("Carb")
-carb_rows = manual_rows("carb")
+carb_rows = manual_rows("carb", fdc_api_key=FDC_API_KEY)
 
 st.markdown("### FAT")
 fat_sel = from_db("Fat")
-fat_rows = manual_rows("fat")
-
-# ---------- USDA lookup ----------
-def usda_lookup(name: str, amt: float, unit: str) -> int:
-    if not FDC_API_KEY or not name:
-        return 0
-    try:
-        s = requests.get(
-            "https://api.nal.usda.gov/fdc/v1/foods/search",
-            params={"api_key": FDC_API_KEY, "query": name, "pageSize": 1}
-        ).json()
-        fdc_id = s["foods"][0]["fdcId"]
-        d = requests.get(
-            f"https://api.nal.usda.gov/fdc/v1/food/{fdc_id}",
-            params={"api_key": FDC_API_KEY}
-        ).json()
-
-        kcal_per_100g = None
-        # prefer labelNutrients.energy, fallback to foodNutrients
-        ln = d.get("labelNutrients", {})
-        if "calories" in ln and "value" in ln["calories"]:
-            kcal_per_100g = float(ln["calories"]["value"])
-        else:
-            for n in d.get("foodNutrients", []):
-                nm = str(n.get("nutrient", {}).get("name","")).lower()
-                if "energy" in nm and str(n.get("unitName","kcal")).lower() == "kcal":
-                    kcal_per_100g = float(n.get("value"))
-                    break
-        if kcal_per_100g is None:
-            return 0
-
-        unit = unit.lower()
-        grams = amt
-        if unit in ("g","gram","grams"):
-            grams = amt
-        elif unit in ("oz","ounce","ounces"):
-            grams = amt * 28.3495
-        elif unit in ("tbsp","tablespoon"):
-            grams = amt * 14.2
-        elif unit in ("tsp","teaspoon"):
-            grams = amt * 4.2
-        elif unit in ("cup","cups"):
-            grams = amt * 236.59   # generic fallback
-        elif unit in ("each","item"):
-            grams = amt * 100.0    # rough fallback
-
-        return int(round((grams/100.0) * kcal_per_100g))
-    except Exception:
-        return 0
+fat_rows = manual_rows("fat", fdc_api_key=FDC_API_KEY)
 
 # ---------- Collect items (DB + manual) ----------
 def collect_items(db_names, manual_rows):
