@@ -1,4 +1,9 @@
 # streamlit_app.py
+# Programmer: Alphonso Brown
+# Date: 10/9/2025
+# Notes:
+#        10.9.25 @10:42 AM - Fixed manual_rows issue
+
 from __future__ import annotations
 import os, io, datetime as dt, requests
 import pandas as pd
@@ -8,7 +13,7 @@ from pptx.util import Inches
 
 from meal_card_generator import Theme, MealItem, MealSection, MealCardData, render_meal_card
 from fdc_lookup import fdc_lookup_kcal
-from manual_rows_fix import manual_rows
+# from manual_rows_fix import manual_rows
 
 st.set_page_config(page_title="Calorie Cards — Generator", layout="wide")
 
@@ -177,15 +182,18 @@ def from_db(category: str):
 st.divider()
 st.markdown("### PROTEIN")
 prot_sel = from_db("Protein")
-prot_rows = manual_rows("protein", fdc_api_key=FDC_API_KEY)
+#prot_rows = manual_rows("protein", fdc_api_key=FDC_API_KEY)
+prot_rows = manual_rows("protein")
 
 st.markdown("### CARB")
 carb_sel = from_db("Carb")
-carb_rows = manual_rows("carb", fdc_api_key=FDC_API_KEY)
+#carb_rows = manual_rows("carb", fdc_api_key=FDC_API_KEY)
+carb_rows = manual_rows("carb")
 
 st.markdown("### FAT")
 fat_sel = from_db("Fat")
-fat_rows = manual_rows("fat", fdc_api_key=FDC_API_KEY)
+#fat_rows = manual_rows("fat", fdc_api_key=FDC_API_KEY)
+fat_rows  = manual_rows("fat")
 
 # ---------- Collect items (DB + manual) ----------
 def collect_items(db_names, manual_rows):
