@@ -149,7 +149,7 @@ def manual_rows(section_key: str):
         unit = cC.selectbox("unit",    UNITS,        key=unit_key)
 
         # bind the number_input to session state key; don't overwrite it directly later
-        cal  = cD.number_input("cal",  key=cal_key,  value=st.session_state[cal_key], step=1)
+        cal  = cD.number_input("cal",  key=cal_key,  step=1, min_value=0) # <-- no 'value'
 
         # 3) button runs a callback that sets session_state and triggers rerun automatically
         cE.button(
