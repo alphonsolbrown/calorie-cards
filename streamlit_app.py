@@ -7,7 +7,7 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from meal_card_generator import Theme, MealItem, MealSection, MealCardData, render_meal_card
-from manual_rows_fix import manual_rows  # our safe component
+from manual_rows_compat import manual_rows  # our safe component
 
 st.set_page_config(page_title="Calorie Cards — Generator", layout="wide")
 
@@ -58,9 +58,9 @@ st.divider()
 st.markdown("#### Enter Items Manually (Lookup populates calories)")
 
 # Safe, consistent inputs that use callback-based Lookup
-prot_rows = manual_rows("protein", fdc_api_key=(FDC_API_KEY or ""))
-carb_rows = manual_rows("carb",    fdc_api_key=(FDC_API_KEY or ""))
-fat_rows  = manual_rows("fat",     fdc_api_key=(FDC_API_KEY or ""))
+prot_rows = manual_rows("protein")
+carb_rows = manual_rows("carb")
+fat_rows  = manual_rows("fat")
 
 def rows_to_items(rows):
     items = []
