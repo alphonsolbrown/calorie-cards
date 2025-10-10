@@ -72,11 +72,18 @@ def ensure_df():
     if "foods" not in st.session_state:
         st.session_state["foods"] = pd.DataFrame(
             [
+                # Base macros
                 {"category":"Protein","name":"Grilled Chicken 4 oz","cal":170},
                 {"category":"Carb","name":"Mixed Veggies 1 cup","cal":70},
                 {"category":"Fat","name":"Olive Oil 1 tsp","cal":40},
+                # Combo categories (examples so UI demonstrates lookups & DB pulls)
+                {"category":"Protein + Fat","name":"Whole Egg 1 each","cal":72},
+                {"category":"Carb + Fat","name":"Avocado Toast (1/2 avo + 1 slice)","cal":180},
+                {"category":"Protein + Carb","name":"Greek Yogurt + Berries (1 cup)","cal":150},
+                {"category":"Protein + Carb + Fat","name":"Turkey Sandwich (half)","cal":220},
             ]
         )
+
 ensure_df()
 foods_df: pd.DataFrame = st.session_state["foods"]
 
@@ -200,18 +207,17 @@ def card_basename():
     return safe
 
 # DB selector helper
-def from_db(category: str):
-    return st.multiselect(
-        f"Add {category.upper()} from DB",
-        options=foods_df.query("category == @category")["name"].tolist(),
-        key=f"db_{category}"
-    )
+def from_db(category_label: str):
+    """Multiselect pulls entries that exactly match this category label."""
+    opts = foods_df.query("category == @category_label")["name"].tolist() if not foods_df.empty else []
+    return st.multiselect(f"Add {category_label.upper()} from DB", options=opts, key=f"db_{category_label}")
+
 
 # -------- Section renderer (dynamic rows + lookup per line) --------
 def render_section(title: str, sec_key: str):
     init_section_rows(sec_key)
     st.markdown(f"### {title.upper()}")
-    sel = from_db(title.split()[0]) if title in ("Protein","Carb","Fat") else []  # DB only for base macros
+    sel = from_db(title)  # works for Protein, Carb, Fat, and all combo categories
 
     # Row controls
     cadd, crem = st.columns([1,1])
@@ -252,7 +258,7 @@ def render_section(title: str, sec_key: str):
             kcal   = int(st.session_state.get(cal_k, 0))
             st.session_state["foods"] = pd.concat(
                 [st.session_state["foods"], pd.DataFrame([{
-                    "category": title.split()[0].capitalize(),  # base category
+                    "category": title,       # <-- full label (e.g., "Protein + Fat")
                     "name": pretty, "cal": kcal
                 }])],
                 ignore_index=True,
@@ -323,8 +329,32 @@ if cB.button("Create New Meal Card"):
     st.experimental_rerun()
 
 def build_card_data():
-    # date shown on card as M/D/YY
-    display_date = date_val.strftime("%-m/%-d/%y") if hasattr(dt.date(2000,1,1), "strftime") else date_val.strftime("%m/%d/%y")
+    # date shown on card as M/D/YY (portable)
+    try:
+        display_date = date_val.strftime("%-m/%-d/%y")
+    except Exception:
+        display_date = date_val.strftime("%m/%d/%y")
+
+    # map UI rows to MealItem lists
+    by_key = {
+        "Protein": prot_items,
+        "Carb":    carb_items,
+        "Fat":     fat_items,
+        "Protein + Fat":        pf_items,
+        "Carb + Fat":           cf_items,
+        "Protein + Carb":       pc_items,
+        "Protein + Carb + Fat": pcf_items,
+    }
+
+    # Only include non-empty sections in the card
+    dynamic_sections = [
+        MealSection(title=label, items=items)
+        for label, items in by_key.items()
+        if items and len(items) > 0
+    ]
+
+    # Backward-compatible fields (your renderer may still consume these three)
+    # We also pass a `sections` list so the generator can render N sections.
     return MealCardData(
         program_title=program.strip() or "Program",
         class_name=(grp.strip() or None),
@@ -334,8 +364,7 @@ def build_card_data():
         protein=MealSection("Protein", prot_items),
         carb=MealSection("Carb", carb_items),
         fat=MealSection("Fat", fat_items),
-        # For combos, append to the carb section’s visual column (renderer supports 3 sections visually).
-        # If your renderer supports extra panels, adapt there; for now we append into existing groups.
+        sections=dynamic_sections  # <-- new, used when available
     )
 
 def save_card_json(png_path: str):

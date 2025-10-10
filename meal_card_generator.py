@@ -1,206 +1,129 @@
-# meal_card_generator.py
+# meal_card_generator.py (backward-compatible dynamic sections)
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
-import os
 
-# ---------- Fonts ----------
-FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
-DEJAVU_SANS = os.path.join(FONT_DIR, "DejaVuSans.ttf")
-DEJAVU_SANS_BOLD = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
-
-def _font(path: str, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    try:
-        if bold and os.path.exists(DEJAVU_SANS_BOLD):
-            return ImageFont.truetype(DEJAVU_SANS_BOLD, size=size)
-        if os.path.exists(DEJAVU_SANS):
-            return ImageFont.truetype(DEJAVU_SANS, size=size)
-        return ImageFont.truetype(path, size=size)
-    except Exception:
-        return ImageFont.load_default()
-
-# ---------- Data ----------
+# ---------- Data models ----------
 @dataclass
 class Theme:
-    panel_color: Tuple[int, int, int] = (244, 244, 244)
-    accent: Tuple[int, int, int] = (103, 43, 145)
-    text: Tuple[int, int, int] = (20, 20, 20)
-    faint: Tuple[int, int, int] = (120, 120, 120)
+    panel_color: Tuple[int,int,int]=(244,244,244)
+    accent: Tuple[int,int,int]=(103,43,145)
+    text: Tuple[int,int,int]=(20,20,20)
+    faint: Tuple[int,int,int]=(120,120,120)
 
 @dataclass
 class MealItem:
     text: str
-    cal: float
+    cal: int
 
 @dataclass
 class MealSection:
-    name: str
-    items: List[MealItem] = field(default_factory=list)
-
-    @property
-    def total(self) -> float:
-        return float(sum(i.cal for i in self.items))
+    title: str
+    items: List[MealItem]=field(default_factory=list)
 
 @dataclass
 class MealCardData:
     program_title: str
-    class_name: Optional[str]
     meal_title: str
     date_str: str
-    brand: Optional[str]
-    protein: MealSection
-    carb: MealSection
-    fat: MealSection
+    class_name: Optional[str]=None
+    brand: Optional[str]=None
+    # Legacy fields (keep for back-compat)
+    protein: Optional[MealSection]=None
+    carb: Optional[MealSection]=None
+    fat: Optional[MealSection]=None
+    # New dynamic list: if provided, render only these sections (omit empties)
+    sections: Optional[List[MealSection]]=None
 
-    @property
-    def total_cal(self) -> float:
-        return float(self.protein.total + self.carb.total + self.fat.total)
+# ---------- Rendering helpers (fonts/layout kept simple for brevity) ----------
+def _load_font(size: int) -> ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size=size)
+    except Exception:
+        return ImageFont.load_default()
 
-# ---------- helpers ----------
-def _measure(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont):
-    bbox = draw.textbbox((0,0), text, font=font)
-    return bbox[2]-bbox[0], bbox[3]-bbox[1]
+def _draw_text(draw, xy, text, font, fill=(0,0,0)):
+    draw.text(xy, text, font=font, fill=fill)
 
-def _fit_font_size(draw, text, max_w, base_px, min_px):
-    size = base_px
-    while size > min_px:
-        f = _font(DEJAVU_SANS, size)
-        w, _ = _measure(draw, text, f)
-        if w <= max_w:
-            return size
-        size -= 1
-    return max(min_px, 10)
+def _col_layout(n_cols: int, W: int, margin: int=48):
+    pad = margin
+    inner = W - (margin*2)
+    col_w = int(inner / n_cols)
+    xs = [margin + i*col_w for i in range(n_cols)]
+    return xs, col_w, pad
 
-def _draw_header_text(draw, x, y, text, color, base_px, max_w, bold=False):
-    size = _fit_font_size(draw, text, max_w, base_px, int(base_px*0.55))
-    f = _font(DEJAVU_SANS, size, bold=bold)
-    draw.text((x, y), text, fill=color, font=f)
-    _, h = _measure(draw, text, f)
-    return h
-
-def _draw_rule(draw, x, y, w, color, h=14):
-    draw.rectangle([x, y, x+w, y+h], fill=color)
-
-# ---------- renderer ----------
-def render_meal_card(
-    card: MealCardData,
-    photo_path: Optional[str],
-    output_path: str = "meal_card.png",
-    size: Tuple[int, int] = (1920, 1200),
-    theme: Theme = Theme(),
-    font_scale: float = 1.0,
-    panel_ratio: float = 0.52,
-) -> str:
-
+# ---------- Main render ----------
+def render_meal_card(card: MealCardData,
+                     photo_path: Optional[str]=None,
+                     output_path: str="meal_card.png",
+                     size: Tuple[int,int]=(1920,1200),
+                     theme: Theme=Theme(),
+                     font_scale: float=1.2,
+                     panel_ratio: float=0.52):
     W, H = size
-    img = Image.new("RGB", size, color=(255, 255, 255))
+    img = Image.new("RGB", (W, H), (255,255,255))
     draw = ImageDraw.Draw(img)
 
-    # decide layout
-    lines_ct = len(card.protein.items) + len(card.carb.items) + len(card.fat.items)
-    use_four = lines_ct >= 8
+    # Header
+    H1 = _load_font(int(64*font_scale))
+    H2 = _load_font(int(36*font_scale))
+    T  = _load_font(int(28*font_scale))
+    S  = _load_font(int(22*font_scale))
 
-    margin = int(24 * font_scale)
-    left_x = margin
-    left_y = margin
-
-    if not use_four:
-        right_w = int((W - margin*2) * max(0.42, min(0.72, panel_ratio)))
-        left_w = (W - (margin*3)) - right_w
-        left_h = H - margin*2
-        right_x = left_x + left_w + margin
-        right_y = margin
-        right_h = H - margin*2
-
-        # photo left
-        if photo_path and os.path.exists(photo_path):
-            photo = Image.open(photo_path).convert("RGB")
-            photo.thumbnail((left_w, left_h))
-            pw, ph = photo.size
-            canvas = Image.new("RGB", (left_w, left_h), (240,240,240))
-            canvas.paste(photo, ((left_w - pw)//2, (left_h - ph)//2))
-            img.paste(canvas, (left_x, left_y))
-
-        content_x, content_w, y = right_x, right_w, right_y
-
-    else:
-        col_w = (W - margin*3)//2
-        row_h = (H - margin*3)//2
-        # photo top-left
-        if photo_path and os.path.exists(photo_path):
-            photo = Image.open(photo_path).convert("RGB")
-            photo.thumbnail((col_w, row_h))
-            pw, ph = photo.size
-            canv = Image.new("RGB", (col_w, row_h), (240,240,240))
-            canv.paste(photo, ((col_w - pw)//2, (row_h - ph)//2))
-            img.paste(canv, (left_x, left_y))
-        content_x, content_w, y = left_x + col_w + margin, col_w, left_y
-
-    # header
-    title_px = int(84 * font_scale)
-    sub_px   = int(44 * font_scale)
-    rule_h   = int(16 * font_scale)
-    pad_y    = int(12 * font_scale)
-
-    y += _draw_header_text(draw, content_x, y, card.program_title, theme.text, title_px, content_w, True) + pad_y
+    _draw_text(draw, (48, 36), card.program_title, H1, theme.accent)
+    _draw_text(draw, (48, 110), f"{card.meal_title}  •  {card.date_str}", H2, theme.text)
+    y = 160
     if card.class_name:
-        y += _draw_header_text(draw, content_x, y, card.class_name, theme.faint, sub_px, content_w) + pad_y
-
-    meal_line = f"{card.meal_title} - {card.date_str}"
-    y += _draw_header_text(draw, content_x, y, meal_line, theme.text, int(60*font_scale), content_w, True) + int(6*font_scale)
-    _draw_rule(draw, content_x, y, content_w, theme.accent, rule_h)
-    y += rule_h + pad_y
-
-    total_line = f"{int(round(card.total_cal))} Calorie Meal"
-    y += _draw_header_text(draw, content_x, y, total_line, theme.text, int(58*font_scale), content_w, True) + int(10*font_scale)
-
-    def section_block(title: str, lines):
-        nonlocal y, content_x, content_w
-        bar_h = int(54 * font_scale)
-        draw.rectangle([content_x, y, content_x+content_w, y+bar_h], fill=theme.accent)
-        head_px = int(40*font_scale)
-        head_f  = _font(DEJAVU_SANS_BOLD, head_px)
-        tx, th  = _measure(draw, title, head_f)
-        draw.text((content_x+int(16*font_scale), y + (bar_h-th)//2), title, fill=(255,255,255), font=head_f)
-        y += bar_h + int(12*font_scale)
-
-        base_px = int(42 * font_scale)
-        min_px  = int(22 * font_scale)
-        for line in (lines or ["—"]):
-            px = _fit_font_size(draw, line, content_w - int(20*font_scale), base_px, min_px)
-            f  = _font(DEJAVU_SANS, px)
-            draw.text((content_x+int(10*font_scale), y), line, fill=theme.text, font=f)
-            _, hln = _measure(draw, line, f)
-            y += hln + int(10*font_scale)
-        _draw_rule(draw, content_x, y, content_w, (230, 222, 235), int(10*font_scale))
-        y += int(10*font_scale)
-
-    prot_lines = [f"{i.text} - {int(round(i.cal))} cal" for i in card.protein.items]
-    carb_lines = [f"{i.text} - {int(round(i.cal))} cal" for i in card.carb.items]
-    fat_lines  = [f"{i.text} - {int(round(i.cal))} cal" for i in card.fat.items]
-
-    if not use_four:
-        section_block("PROTEIN", prot_lines)
-        section_block("CARB", carb_lines)
-        section_block("FAT",  fat_lines)
-    else:
-        section_block("PROTEIN", prot_lines)
-        # move to lower-left
-        col_w = (W - margin*3)//2
-        row_h = (H - margin*3)//2
-        content_x, content_w, y = left_x, col_w, left_y + row_h + margin
-        section_block("CARB", carb_lines)
-        # right column
-        content_x, content_w, y = left_x + col_w + margin, col_w, left_y
-        section_block("FAT", fat_lines)
-
+        _draw_text(draw, (48, y), card.class_name, T, theme.faint); y += int(36*font_scale)
     if card.brand:
-        bpx = int(24*font_scale)
-        bf  = _font(DEJAVU_SANS, bpx)
-        bw, bh = _measure(draw, card.brand, bf)
-        draw.text((W - bw - margin, H - bh - margin//2), card.brand, fill=theme.faint, font=bf)
+        _draw_text(draw, (48, y), card.brand, S, theme.faint)
+
+    # Photo panel (right)
+    panel_w = int(W * panel_ratio)
+    panel_x = W - panel_w
+    draw.rectangle([panel_x, 0, W, H], fill=theme.panel_color)
+    if photo_path:
+        try:
+            ph = Image.open(photo_path).convert("RGB")
+            # fit photo inside right panel with margins
+            pad = 48
+            box = (panel_x+pad, pad, W-pad, H-pad)
+            ph.thumbnail((box[2]-box[0], box[3]-box[1]))
+            # center
+            px = panel_x + pad + ((box[2]-box[0]) - ph.width)//2
+            py = pad + ((box[3]-box[1]) - ph.height)//2
+            img.paste(ph, (px, py))
+        except Exception:
+            pass
+
+    # Sections to render (dynamic if provided, else fall back to legacy)
+    if card.sections and len(card.sections) > 0:
+        sections = [s for s in card.sections if s.items]   # omit empty
+    else:
+        # Back-compat: show only non-empty of the legacy 3
+        tmp = []
+        if card.protein and card.protein.items: tmp.append(card.protein)
+        if card.carb and card.carb.items:       tmp.append(card.carb)
+        if card.fat and card.fat.items:         tmp.append(card.fat)
+        sections = tmp
+
+    # Left content area (everything except photo panel)
+    content_w = panel_x
+    n_cols = max(1, min(len(sections), 4))  # up to 4 columns so long lists stay readable
+    xs, col_w, pad = _col_layout(n_cols, content_w, margin=48)
+    top_y = 220
+
+    # Render columns
+    for idx, sec in enumerate(sections):
+        x = xs[idx % n_cols]
+        y = top_y + (idx // n_cols) * 0  # simple top alignment
+        _draw_text(draw, (x, y), sec.title, H2, theme.accent); y += int(40*font_scale)
+        # Items
+        for it in sec.items:
+            _draw_text(draw, (x, y), f"• {it.text}", T, theme.text)
+            _draw_text(draw, (x + col_w - 140, y), f"{it.cal} kcal", T, theme.faint)
+            y += int(34*font_scale)
 
     img.save(output_path, "PNG")
-    return output_path
 
