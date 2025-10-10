@@ -1,4 +1,5 @@
-# meal_card_generator.py (backward-compatible dynamic sections)
+# meal_card_generator.py
+# Classic, readable layout: stacked sections with band headers; full item text + " - ### cal"
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -14,8 +15,8 @@ class Theme:
 
 @dataclass
 class MealItem:
-    text: str
-    cal: int
+    text: str           # full text as typed (e.g., "Eggs 2 each")
+    cal: int            # integer calories
 
 @dataclass
 class MealSection:
@@ -29,29 +30,55 @@ class MealCardData:
     date_str: str
     class_name: Optional[str]=None
     brand: Optional[str]=None
-    # Legacy fields (keep for back-compat)
+    # Legacy fields (back-compat)
     protein: Optional[MealSection]=None
     carb: Optional[MealSection]=None
     fat: Optional[MealSection]=None
-    # New dynamic list: if provided, render only these sections (omit empties)
+    # Preferred dynamic list: render these if present; empty sections omitted automatically
     sections: Optional[List[MealSection]]=None
 
-# ---------- Rendering helpers (fonts/layout kept simple for brevity) ----------
+# ---------- Font helpers ----------
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype("DejaVuSans.ttf", size=size)
     except Exception:
         return ImageFont.load_default()
 
-def _draw_text(draw, xy, text, font, fill=(0,0,0)):
-    draw.text(xy, text, font=font, fill=fill)
+def _text_size(draw: ImageDraw.ImageDraw, txt: str, font: ImageFont.FreeTypeFont) -> Tuple[int,int]:
+    bbox = draw.textbbox((0,0), txt, font=font)
+    return bbox[2]-bbox[0], bbox[3]-bbox[1]
 
-def _col_layout(n_cols: int, W: int, margin: int=48):
-    pad = margin
-    inner = W - (margin*2)
-    col_w = int(inner / n_cols)
-    xs = [margin + i*col_w for i in range(n_cols)]
-    return xs, col_w, pad
+# simple word-wrap that preserves the full text (no ellipsis)
+def _wrap(draw, text: str, font, max_w: int) -> List[str]:
+    words = text.split()
+    if not words:
+        return [""]
+    lines, cur = [], ""
+    for w in words:
+        cand = w if not cur else f"{cur} {w}"
+        if _text_size(draw, cand, font)[0] <= max_w:
+            cur = cand
+        else:
+            lines.append(cur or w)
+            cur = w if cur else ""
+    if cur:
+        lines.append(cur)
+    return lines
+
+# draw one item: • <full text> - ### cal  (wraps if needed; calories on the first line)
+def _draw_item(draw, x: int, y: int, text: str, kcal: int, font, color_text, color_kcal, line_h: int, max_w: int) -> int:
+    bullet = "• "
+    kcal_str = f"{kcal} cal"
+    first_line_text = f"{bullet}{text} - {kcal_str}"
+    lines = _wrap(draw, first_line_text, font, max_w)
+
+    for i, ln in enumerate(lines):
+        # Indent continuation lines under text (no extra bullet)
+        if i > 0 and ln.startswith(bullet):
+            ln = ln[len(bullet):]
+        draw.text((x, y), ln, font=font, fill=color_text)
+        y += line_h
+    return y
 
 # ---------- Main render ----------
 def render_meal_card(card: MealCardData,
@@ -65,65 +92,110 @@ def render_meal_card(card: MealCardData,
     img = Image.new("RGB", (W, H), (255,255,255))
     draw = ImageDraw.Draw(img)
 
-    # Header
-    H1 = _load_font(int(64*font_scale))
-    H2 = _load_font(int(36*font_scale))
-    T  = _load_font(int(28*font_scale))
-    S  = _load_font(int(22*font_scale))
+    # Fonts
+    H1  = _load_font(int(88*font_scale))  # program title
+    H2  = _load_font(int(52*font_scale))  # "Meal 1 - 10/10/25"
+    TAG = _load_font(int(40*font_scale))  # group/brand
+    HC  = _load_font(int(60*font_scale))  # TOTAL CALORIE headline
+    SEC = _load_font(int(40*font_scale))  # section header
+    T   = _load_font(int(36*font_scale))  # items
 
-    _draw_text(draw, (48, 36), card.program_title, H1, theme.accent)
-    _draw_text(draw, (48, 110), f"{card.meal_title}  •  {card.date_str}", H2, theme.text)
-    y = 160
-    if card.class_name:
-        _draw_text(draw, (48, y), card.class_name, T, theme.faint); y += int(36*font_scale)
-    if card.brand:
-        _draw_text(draw, (48, y), card.brand, S, theme.faint)
+    margin = 48
 
-    # Photo panel (right)
+    # Right photo panel
     panel_w = int(W * panel_ratio)
     panel_x = W - panel_w
     draw.rectangle([panel_x, 0, W, H], fill=theme.panel_color)
     if photo_path:
         try:
             ph = Image.open(photo_path).convert("RGB")
-            # fit photo inside right panel with margins
             pad = 48
-            box = (panel_x+pad, pad, W-pad, H-pad)
-            ph.thumbnail((box[2]-box[0], box[3]-box[1]))
-            # center
-            px = panel_x + pad + ((box[2]-box[0]) - ph.width)//2
-            py = pad + ((box[3]-box[1]) - ph.height)//2
+            max_w = panel_w - pad*2
+            max_h = H - pad*2
+            ph.thumbnail((max_w, max_h))
+            px = panel_x + pad + (max_w - ph.width)//2
+            py = pad + (max_h - ph.height)//2
             img.paste(ph, (px, py))
         except Exception:
             pass
 
-    # Sections to render (dynamic if provided, else fall back to legacy)
-    if card.sections and len(card.sections) > 0:
-        sections = [s for s in card.sections if s.items]   # omit empty
+    # Header (left)
+    x0 = margin
+    y  = margin
+    draw.text((x0, y), card.program_title, font=H1, fill=theme.accent)
+    y += _text_size(draw, card.program_title, H1)[1] + int(12*font_scale)
+
+    meal_line = f"{card.meal_title} - {card.date_str}"
+    draw.text((x0, y), meal_line, font=H2, fill=theme.text)
+    y += _text_size(draw, meal_line, H2)[1] + int(8*font_scale)
+
+    if card.class_name:
+        draw.text((x0, y), card.class_name, font=TAG, fill=theme.faint)
+        y += _text_size(draw, card.class_name, TAG)[1] + int(8*font_scale)
+
+    # Sections to render (dynamic if provided, else legacy non-empty)
+    if card.sections:
+        sections = [s for s in card.sections if s.items]
     else:
-        # Back-compat: show only non-empty of the legacy 3
-        tmp = []
-        if card.protein and card.protein.items: tmp.append(card.protein)
-        if card.carb and card.carb.items:       tmp.append(card.carb)
-        if card.fat and card.fat.items:         tmp.append(card.fat)
-        sections = tmp
+        sections = []
+        if card.protein and card.protein.items: sections.append(card.protein)
+        if card.carb and card.carb.items:       sections.append(card.carb)
+        if card.fat and card.fat.items:         sections.append(card.fat)
 
-    # Left content area (everything except photo panel)
-    content_w = panel_x
-    n_cols = max(1, min(len(sections), 4))  # up to 4 columns so long lists stay readable
-    xs, col_w, pad = _col_layout(n_cols, content_w, margin=48)
-    top_y = 220
+    # If nothing to render, save header/photo and return
+    if not sections:
+        img.save(output_path, "PNG"); return
 
-    # Render columns
-    for idx, sec in enumerate(sections):
-        x = xs[idx % n_cols]
-        y = top_y + (idx // n_cols) * 0  # simple top alignment
-        _draw_text(draw, (x, y), sec.title, H2, theme.accent); y += int(40*font_scale)
-        # Items
+    # ---- NEW: Total Calories headline + thin accent rule ----
+    total_kcal = sum(it.cal for s in sections for it in s.items)
+    cal_line = f"{total_kcal} Calorie Meal"
+    draw.text((x0, y), cal_line, font=HC, fill=theme.text)
+    y += _text_size(draw, cal_line, HC)[1] + int(10*font_scale)
+
+    # thin accent rule
+    content_w = (panel_x - margin)  # left content width
+    rule_h = max(2, int(6 * font_scale))
+    draw.rectangle([x0, y, x0 + content_w, y + rule_h], fill=theme.accent)
+    y += rule_h + int(14*font_scale)
+    # ---- /NEW ----
+
+    # Section blocks
+    band_h = int(48 * font_scale)
+    item_line_h = int(44 * font_scale)
+    box_gap = int(16 * font_scale)
+    inner_pad = int(14 * font_scale)
+
+    for sec in sections:
+        # Section band
+        band_text = sec.title.upper()
+        draw.rectangle([x0, y, x0 + content_w, y + band_h], fill=theme.accent)
+        ty = y + (band_h - _text_size(draw, band_text, SEC)[1]) // 2
+        draw.text((x0 + inner_pad, ty), band_text, font=SEC, fill=(255,255,255))
+        y += band_h + int(10*font_scale)
+
+        # Items (full text + " - ### cal"), wrapped as needed
+        max_w = content_w - inner_pad*2
         for it in sec.items:
-            _draw_text(draw, (x, y), f"• {it.text}", T, theme.text)
-            _draw_text(draw, (x + col_w - 140, y), f"{it.cal} kcal", T, theme.faint)
-            y += int(34*font_scale)
+            y = _draw_item(
+                draw=draw,
+                x=x0 + inner_pad,
+                y=y,
+                text=it.text,
+                kcal=int(it.cal),
+                font=T,
+                color_text=theme.text,
+                color_kcal=theme.faint,
+                line_h=item_line_h,
+                max_w=max_w
+            )
+        y += box_gap
+
+    # Footer brand (bottom-right of left area), if present
+    if card.brand:
+        bw, bh = _text_size(draw, card.brand, TAG)
+        bx = x0 + content_w - bw
+        by = H - bh - margin
+        draw.text((bx, by), card.brand, font=TAG, fill=theme.faint)
 
     img.save(output_path, "PNG")
 
