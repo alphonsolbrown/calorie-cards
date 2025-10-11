@@ -58,14 +58,55 @@ with st.sidebar:
     )
     right_ratio = st.slider("Right panel width (two-panel only)", 0.42, 0.72, 0.52, 0.01)
 
+    # ---------------- Saved Cards Manager ----------------
     st.markdown("---")
     st.subheader("Saved Meal Cards")
-    # List previously saved JSONs
-    saved_names = sorted([p.stem for p in CARDS_DIR.glob("*.json")], reverse=True)
-    load_choice = st.selectbox("Open previous card", options=["(none)"] + saved_names)
-    if st.button("Load Selected", use_container_width=True, disabled=(load_choice == "(none)")):
-        st.session_state["_load_card_name"] = load_choice
-        st.rerun()
+
+    CARDS_DIR = Path("cards")
+    CARDS_DIR.mkdir(exist_ok=True)
+
+    def list_saved_cards():
+        items = []
+        for j in CARDS_DIR.glob("*.json"):
+            name = j.stem
+            p_png = CARDS_DIR / f"{name}.png"
+            mtime = j.stat().st_mtime
+            items.append({"name": name, "json": j, "png": p_png, "mtime": mtime})
+        # newest first
+        return sorted(items, key=lambda d: d["mtime"], reverse=True)
+
+    saved = list_saved_cards()
+    names = ["(none)"] + [it["name"] for it in saved]
+    sel_name = st.selectbox("Select a saved card", options=names, key="saved_sel")
+
+    if sel_name != "(none)":
+        card = next((it for it in saved if it["name"] == sel_name), None)
+        if card:
+            # preview if PNG exists
+            if card["png"].exists():
+                st.image(str(card["png"]), use_column_width=True)
+            btn1, btn2, btn3 = st.columns(3)
+            if btn1.button("Load", use_container_width=True):
+                st.session_state["_load_card_name"] = sel_name
+                st.rerun()
+            if btn2.download_button("JSON", data=card["json"].read_bytes(),
+                                    file_name=f"{sel_name}.json", mime="application/json",
+                                    use_container_width=True):
+                pass
+            if card["png"].exists():
+                st.download_button("PNG", data=card["png"].read_bytes(),
+                                   file_name=f"{sel_name}.png", mime="image/png",
+                                   use_container_width=True)
+            if btn3.button("Delete", type="secondary", use_container_width=True):
+                # delete both JSON and PNG
+                try:
+                    card["json"].unlink(missing_ok=True)
+                    card["png"].unlink(missing_ok=True)
+                    st.success(f"Deleted {sel_name}")
+                except Exception as e:
+                    st.error(f"Could not delete: {e}")
+                st.rerun()
+
 
 # -------------------- Session bootstrap --------------------
 def ensure_df():
@@ -223,7 +264,7 @@ def render_section(title: str, sec_key: str):
     cadd, crem = st.columns([1,1])
     if cadd.button(f"Add Row (+) [{title}]", key=f"{sec_key}_add"):
         st.session_state[rows_key(sec_key)] += 1
-        st.experimental_rerun()
+        st.rerun()
     if crem.button(f"Remove Row (–) [{title}]", key=f"{sec_key}_rem"):
         current = st.session_state[rows_key(sec_key)]
         if current > 1:
@@ -232,7 +273,7 @@ def render_section(title: str, sec_key: str):
             for suf in ("_name","_amt","_unit","_cal"):
                 st.session_state.pop(f"{base}{suf}", None)
             st.session_state[rows_key(sec_key)] = current - 1
-            st.experimental_rerun()
+            st.rerun()
 
     # Rows
     rows = []
@@ -321,12 +362,12 @@ if cA.button("Reset Single Card"):
     for _, k in SECTIONS:
         reset_section(k)
     st.toast("Single Card inputs reset.")
-    st.experimental_rerun()
+    st.rerun()
 
 if cB.button("Create New Meal Card"):
     hard_reset_editor()
     st.toast("Started a new empty card.")
-    st.experimental_rerun()
+    st.rerun()
 
 def build_card_data():
     # date shown on card as M/D/YY (portable)
@@ -469,5 +510,5 @@ if st.session_state.get("_load_card_name"):
                 st.session_state[f"{base}_amt"]  = 0.0
                 st.session_state[f"{base}_unit"] = "g"
                 st.session_state[f"{base}_cal"]  = int(item.get("cal",0))
-        st.experimental_rerun()
+        st.rerun()
 
