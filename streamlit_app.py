@@ -40,19 +40,23 @@ with st.expander("🔎 USDA Diagnostics (local help)"):
     test_name = tcol1.text_input("Food", value="grapes")
     test_amt  = tcol2.number_input("Amount", value=152.0, step=1.0)
     test_unit = tcol3.selectbox("Unit", ["g","oz","cup","tbsp","tsp","each"], index=0)
+
     if st.button("Run test lookup"):
         try:
-            from fdc_lookup import fdc_lookup_kcal
+            from fdc_lookup import fdc_lookup_kcal, last_error
             kcal = fdc_lookup_kcal(test_name, test_amt, test_unit, api_key=FDC_API_KEY or "")
             if kcal is None:
-                st.error("Lookup returned None (no result). See likely causes below.")
+                err = last_error()
+                st.error("Lookup returned None (no result).")
                 st.write({
                     "has_key": bool(FDC_API_KEY),
                     "name": test_name,
                     "amt": float(test_amt),
                     "unit": test_unit,
                 })
-                st.info("Tips: Check key; try a simpler term (e.g., 'grapes' not brand); confirm requests installed.")
+                with st.expander("See error details from USDA call"):
+                    st.json(err)
+                st.info("If status is 401/403, check your API key. If status is None, confirm internet access from this machine and that 'requests' can make outbound HTTPS calls.")
             else:
                 st.success(f"Total calories: {int(kcal)} kcal")
         except Exception as e:

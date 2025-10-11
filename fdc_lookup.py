@@ -1,6 +1,6 @@
-# fdc_lookup.py — USDA lookup with defensive fallbacks & clearer logging
+# fdc_lookup.py — USDA lookup with explicit HTTP diagnostics and robust fallbacks
 from __future__ import annotations
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import logging
 import requests
 
@@ -9,12 +9,24 @@ log = logging.getLogger(__name__)
 FDC_SEARCH_URL  = "https://api.nal.usda.gov/fdc/v1/foods/search"
 FDC_DETAILS_URL = "https://api.nal.usda.gov/fdc/v1/food/{fdcId}"
 
+# Basic fallbacks for household measures if USDA portion matching fails
 FALLBACK_GRAMS = {
     "each": {"egg": 50, "eggs": 50, "apple": 182, "banana": 118, "orange": 131, "pear": 178, "peach": 150},
     "tbsp": 14.2, "tsp": 4.2, "cup": 240.0, "oz": 28.349523125, "g": 1.0,
 }
 
-# ---------- helpers for ranking ----------
+# ----------------------- small diagnostics helpers -----------------------
+_last_error: Dict[str, Any] = {}
+
+def last_error() -> Dict[str, Any]:
+    """Expose last HTTP/parse error for the UI."""
+    return _last_error.copy()
+
+def _set_err(stage: str, **kw):
+    _last_error.clear()
+    _last_error.update({"stage": stage, **kw})
+
+# ----------------------- ranking & parsing helpers -----------------------
 def _datatype_rank(dt: str) -> int:
     return {"Survey (FNDDS)": 0, "SR Legacy": 1, "Foundation": 2, "Branded": 3}.get(dt, 99)
 
@@ -27,9 +39,8 @@ def _best_food(foods: List[Dict[str, Any]], query: str) -> Optional[Dict[str, An
         return (_datatype_rank(f.get("dataType", "")), dried_penalty, -float(f.get("score", 0.0)))
     return sorted(foods, key=sort_key)[0] if foods else None
 
-# ---------- calorie extraction ----------
 def _nutrient_kcal_per100g(food: Dict[str, Any]) -> Optional[float]:
-    # Energy = nutrient number 1008; appears either under nutrient.number or nutrientNumber
+    # Nutrient number 1008 (kcal). Can appear as nutrient.number or nutrientNumber.
     for n in food.get("foodNutrients") or []:
         num = (n.get("nutrient") or {}).get("number") or n.get("nutrientNumber")
         if str(num) == "1008":
@@ -41,9 +52,9 @@ def _nutrient_kcal_per100g(food: Dict[str, Any]) -> Optional[float]:
 def _label_calories(food: Dict[str, Any]) -> Optional[float]:
     lab = food.get("labelNutrients") or {}
     if isinstance(lab, dict):
-        val = (lab.get("calories") or {}).get("value")
-        if isinstance(val, (int, float)):
-            return float(val)
+        v = (lab.get("calories") or {}).get("value")
+        if isinstance(v, (int, float)):
+            return float(v)
     return None
 
 def _serving_size_grams(food: Dict[str, Any]) -> Optional[float]:
@@ -58,7 +69,6 @@ def _serving_size_grams(food: Dict[str, Any]) -> Optional[float]:
     return None
 
 def _calories_per_gram(food: Dict[str, Any]) -> Optional[float]:
-    # Prefer table per 100 g; fallback to label cals divided by serving-size grams
     per100 = _nutrient_kcal_per100g(food)
     if isinstance(per100, (int, float)):
         return per100 / 100.0
@@ -69,80 +79,83 @@ def _calories_per_gram(food: Dict[str, Any]) -> Optional[float]:
             return label / g
     return None
 
-# ---------- portion grams for request ----------
 def _grams_for_request(food: Dict[str, Any], unit: str, amt: float, name: str) -> Optional[float]:
     unit = (unit or "g").lower().strip()
     if unit in ("g", "oz"):
         return float(amt) * (1.0 if unit == "g" else FALLBACK_GRAMS["oz"])
 
-    # Try USDA portions that mention the requested measure
     for p in food.get("foodPortions") or []:
         gram = p.get("gramWeight")
         desc = (p.get("portionDescription") or "").lower()
         unit_name = (p.get("measureUnit", {}) or {}).get("name", "").lower()
         if isinstance(gram, (int, float)) and (
-            unit in desc
-            or unit in unit_name
-            or (unit == "each" and ("each" in desc or "piece" in desc or "unit" in desc))
+            unit in desc or unit in unit_name or (unit == "each" and ("each" in desc or "piece" in desc or "unit" in desc))
         ):
             return float(amt) * float(gram)
 
-    # Heuristics if no portion found
     if unit == "each":
         lower = (name or "").lower().strip()
         for key, g in FALLBACK_GRAMS["each"].items():
             if key in lower:
                 return float(amt) * float(g)
-        return float(amt) * 50.0  # generic fallback
+        return float(amt) * 50.0  # generic each
     if unit in ("tbsp", "tsp", "cup"):
         return float(amt) * float(FALLBACK_GRAMS[unit])
 
     return None
 
-# ---------- search & fetch ----------
-def _search_food(query: str, api_key: str) -> Optional[Dict[str, Any]]:
-    """Be tolerant: try with datatype filter, then without if empty."""
+# ----------------------- HTTP calls (with diagnostics) -----------------------
+def _http_json(url: str, params: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[str]]:
     try:
-        params = {
-            "api_key": api_key,
-            "query": query,
-            "pageSize": 25,
-            "dataType": ["Survey (FNDDS)", "SR Legacy", "Foundation", "Branded"],
-        }
-        r = requests.get(FDC_SEARCH_URL, params=params, timeout=20)
-        r.raise_for_status()
-        foods = (r.json() or {}).get("foods") or []
-        if not foods:
-            # second pass with no dataType filter (some terms only return branded)
-            params.pop("dataType", None)
-            r2 = requests.get(FDC_SEARCH_URL, params=params, timeout=20)
-            r2.raise_for_status()
-            foods = (r2.json() or {}).get("foods") or []
-        if not foods:
-            log.info("FDC search: no foods for %r", query)
-            return None
-        return _best_food(foods, query)
+        r = requests.get(url, params=params, timeout=20)
+        status = r.status_code
+        if status != 200:
+            # Try to capture USDA error structure if present
+            try:
+                return None, status, r.json()
+            except Exception:
+                return None, status, r.text
+        return r.json(), status, None
     except Exception as e:
-        log.warning("FDC search failed for %r: %s", query, e)
+        return None, None, repr(e)
+
+def _search_food(query: str, api_key: str) -> Optional[Dict[str, Any]]:
+    params = {"api_key": api_key, "query": query, "pageSize": 25,
+              "dataType": ["Survey (FNDDS)", "SR Legacy", "Foundation", "Branded"]}
+    data, status, err = _http_json(FDC_SEARCH_URL, params)
+    if data is None:
+        _set_err("search", status=status, error=err, params=params)
         return None
+    foods = (data or {}).get("foods") or []
+    if not foods:
+        # Retry without dataType filter (some queries only hit one source)
+        params.pop("dataType", None)
+        data2, status2, err2 = _http_json(FDC_SEARCH_URL, params)
+        if data2 is None:
+            _set_err("search", status=status2, error=err2, params=params)
+            return None
+        foods = (data2 or {}).get("foods") or []
+        if not foods:
+            _set_err("search_empty", status=status2, error="no foods", params=params)
+            return None
+    return _best_food(foods, query)
 
 def _get_food(fdc_id: int, api_key: str) -> Optional[Dict[str, Any]]:
-    try:
-        r = requests.get(FDC_DETAILS_URL.format(fdcId=fdc_id), params={"api_key": api_key}, timeout=20)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        log.warning("FDC details failed for %s: %s", fdc_id, e)
+    params = {"api_key": api_key}
+    data, status, err = _http_json(FDC_DETAILS_URL.format(fdcId=fdc_id), params)
+    if data is None:
+        _set_err("details", status=status, error=err, fdc_id=fdc_id)
         return None
+    return data
 
-# ---------- public API ----------
+# ----------------------- public API -----------------------
 def fdc_lookup_kcal(name: str, amt: float, unit: str, *, api_key: str) -> Optional[float]:
     """
-    Return total kcal for (name, amt, unit).
-    Robust against sparse/branded entries and missing portions.
+    Return total kcal for (name, amt, unit). If something fails, returns None
+    and records details retrievable via last_error().
     """
     if not name or not api_key:
-        log.info("fdc_lookup_kcal: missing name or api_key (name=%r, has_key=%s)", name, bool(api_key))
+        _set_err("input", error="missing name or api_key", name=name, has_key=bool(api_key))
         return None
 
     food = _search_food(name, api_key)
@@ -157,14 +170,15 @@ def fdc_lookup_kcal(name: str, amt: float, unit: str, *, api_key: str) -> Option
     grams_req = _grams_for_request(detail, unit, float(amt or 0.0), name)
 
     if cal_per_g is None:
-        log.info("fdc_lookup_kcal: no per-gram calories (fdcId=%s, name=%r)", food.get("fdcId"), name)
+        _set_err("parse", error="no per-gram calories", fdc_id=food.get("fdcId"))
         return None
     if grams_req is None:
-        log.info("fdc_lookup_kcal: no gram match for unit=%r (fdcId=%s, name=%r)", unit, food.get("fdcId"), name)
+        _set_err("parse", error=f"no gram match for unit={unit}", fdc_id=food.get("fdcId"))
         return None
 
     total = round(cal_per_g * grams_req, 0)
-    log.info("fdc_lookup_kcal OK: %r x %s %s => %s kcal (per_g=%.4f, grams=%.2f, fdcId=%s)",
+    log.info("FDC OK: %r x %s %s => %s kcal (per_g=%.4f, grams=%.2f, fdcId=%s)",
              name, amt, unit, total, cal_per_g, grams_req, food.get("fdcId"))
+    _set_err("ok", fdc_id=food.get("fdcId"), total=total)
     return total
 
