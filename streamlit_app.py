@@ -8,6 +8,9 @@
 #           and naming convention for downloads.
 
 from __future__ import annotations
+import logging
+logging.basicConfig(level=logging.INFO)
+
 import os, io, json, datetime as dt
 from pathlib import Path
 import pandas as pd
@@ -30,6 +33,30 @@ FDC_API_KEY = st.secrets.get("FDC_API_KEY", os.getenv("FDC_API_KEY", ""))
 if not FDC_API_KEY:
     with st.expander("USDA Internet Lookup (developer only – set key for local testing)"):
         FDC_API_KEY = st.text_input("FDC API Key", type="password")
+
+with st.expander("🔎 USDA Diagnostics (local help)"):
+    st.caption(f"API key present: {'✅' if bool(FDC_API_KEY) else '❌'}")
+    tcol1, tcol2, tcol3 = st.columns([2,1,1])
+    test_name = tcol1.text_input("Food", value="grapes")
+    test_amt  = tcol2.number_input("Amount", value=152.0, step=1.0)
+    test_unit = tcol3.selectbox("Unit", ["g","oz","cup","tbsp","tsp","each"], index=0)
+    if st.button("Run test lookup"):
+        try:
+            from fdc_lookup import fdc_lookup_kcal
+            kcal = fdc_lookup_kcal(test_name, test_amt, test_unit, api_key=FDC_API_KEY or "")
+            if kcal is None:
+                st.error("Lookup returned None (no result). See likely causes below.")
+                st.write({
+                    "has_key": bool(FDC_API_KEY),
+                    "name": test_name,
+                    "amt": float(test_amt),
+                    "unit": test_unit,
+                })
+                st.info("Tips: Check key; try a simpler term (e.g., 'grapes' not brand); confirm requests installed.")
+            else:
+                st.success(f"Total calories: {int(kcal)} kcal")
+        except Exception as e:
+            st.exception(e)
 
 # -------------------- Sidebar: Brand / Theme --------------------
 with st.sidebar:

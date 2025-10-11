@@ -170,14 +170,17 @@ def fdc_lookup_kcal(name: str, amt: float, unit: str, *, api_key: str) -> Option
     - Multiplies by computed grams for the requested portion.
     """
     if not name or not api_key:
+        log.info("fdc_lookup_kcal: missing name/api_key")
         return None
 
     food = _search_food(name, api_key)
     if not food:
+        log.info("fdc_lookup_kcal: no food found for query=%r", name)
         return None
 
     detail = _get_food(food.get("fdcId"), api_key)
     if not detail:
+        log.info("fdc_lookup_kcal: no details for fdcId=%r",food.get("fdcId"))
         return None
 
     cal_per_g = _calories_per_gram(detail)
