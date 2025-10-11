@@ -40,13 +40,19 @@ def _best_food(foods: List[Dict[str, Any]], query: str) -> Optional[Dict[str, An
     return sorted(foods, key=sort_key)[0] if foods else None
 
 def _nutrient_kcal_per100g(food: Dict[str, Any]) -> Optional[float]:
-    # Nutrient number 1008 (kcal). Can appear as nutrient.number or nutrientNumber.
+    """
+    Return kcal per 100 g if possible.
+    Handles both USDA nutrient.number == 1008 and nutrient.name == 'Energy'.
+    """
     for n in food.get("foodNutrients") or []:
-        num = (n.get("nutrient") or {}).get("number") or n.get("nutrientNumber")
-        if str(num) == "1008":
-            val = n.get("amount")
-            if isinstance(val, (int, float)):
-                return float(val)
+        nutrient = n.get("nutrient") or {}
+        num = nutrient.get("number") or n.get("nutrientNumber")
+        name = (nutrient.get("name") or "").lower()
+        val = n.get("amount")
+        if isinstance(val, (int, float)) and (
+            str(num) == "1008" or "energy" in name or "kcal" in name
+        ):
+            return float(val)
     return None
 
 def _label_calories(food: Dict[str, Any]) -> Optional[float]:
