@@ -115,7 +115,7 @@ with st.sidebar:
         if card:
             # preview if PNG exists
             if card["png"].exists():
-                st.image(str(card["png"]), use_column_width=True)
+                st.image(str(card["png"]), use_container_width=True)
             btn1, btn2, btn3 = st.columns(3)
             if btn1.button("Load", use_container_width=True):
                 st.session_state["_load_card_name"] = sel_name
